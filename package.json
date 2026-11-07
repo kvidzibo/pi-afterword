@@ -1,0 +1,59 @@
+{
+  "name": "@kvidzibo/pi-afterword",
+  "version": "0.6.0",
+  "description": "Save durable conversation lessons on Pi quit or Pinote Done, and browse them with /pi-afterword.",
+  "type": "module",
+  "license": "MIT",
+  "author": "Tomas Rackauskas",
+  "keywords": [
+    "pi-package",
+    "memory",
+    "lessons"
+  ],
+  "engines": {
+    "node": ">=22.19.0"
+  },
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org/"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/kvidzibo/pi-afterword.git"
+  },
+  "homepage": "https://github.com/kvidzibo/pi-afterword#readme",
+  "bugs": {
+    "url": "https://github.com/kvidzibo/pi-afterword/issues"
+  },
+  "pi": {
+    "extensions": [
+      "./index.ts"
+    ]
+  },
+  "files": [
+    "index.ts",
+    "README.md",
+    "CHANGELOG.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "test": "node --test --experimental-strip-types tests/*.test.ts",
+    "prepublishOnly": "npm test"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*",
+    "@earendil-works/pi-tui": "*"
+  },
+  "peerDependenciesMeta": {
+    "@earendil-works/pi-coding-agent": {
+      "optional": true
+    },
+    "@earendil-works/pi-tui": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
+    "@earendil-works/pi-coding-agent": "1.5.0",
+    "@earendil-works/pi-tui": "1.5.0"
+  }
+}
