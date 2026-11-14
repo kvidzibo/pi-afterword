@@ -452,10 +452,10 @@ test("afterwords survive Done and quit once, reject invalid output, and cannot s
 		session.appendCompaction("Verified queue isolation; remaining checks pending.", keep, 1000);
 		assert.deepEqual(session.buildSessionProjection().messages.map((message: any) => message.role), ["compactionSummary", "user"]);
 		note = "Queue isolation was verified before compaction; finish the remaining checks.";
-		provider = async () => ({ ...result(), provider: "physical", model: "routed-model", thinkingLevel: "low" });
+		provider = async () => ({ ...result(), provider: "physical", model: "routed-alias", responseModel: "resolved-model", thinkingLevel: "low" });
 		await handlers.get("session_shutdown")!({ reason: "quit" }, ctx);
 		assert.equal(rows().length, 3, "Compacted-away assistant messages still support an afterword");
-		assert.equal(rows()[2].model, "physical/routed-model", "Use the generating model reported by routed responses");
+		assert.equal(rows()[2].model, "physical/resolved-model", "Prefer the provider-reported generating model over the routed alias");
 		assert.equal(rows()[2].thinking_level, "low");
 		await handlers.get("session_start")!({ reason: "reload" }, ctx);
 		await handlers.get("session_shutdown")!({ reason: "reload" }, ctx);

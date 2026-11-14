@@ -91,7 +91,7 @@ async function record(ctx: ExtensionContext, state: NonNullable<ReturnType<typeo
 		db.exec("BEGIN IMMEDIATE"); // Never wait for locks during shutdown.
 		check();
 		db.prepare("INSERT OR IGNORE INTO afterwords (session_id, context_hash, task_id, reason, cwd, model, thinking_level, created_at, note) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)")
-			.run(sessionId, hash, taskId ?? null, reason, cwd, `${result.provider ?? model.provider}/${result.model ?? model.id}`, result.thinkingLevel ?? thinkingLevel, new Date().toISOString(), note);
+			.run(sessionId, hash, taskId ?? null, reason, cwd, `${result.provider ?? model.provider}/${result.responseModel ?? result.model ?? model.id}`, result.thinkingLevel ?? thinkingLevel, new Date().toISOString(), note);
 		check();
 		db.exec("COMMIT");
 	} catch (error) {
