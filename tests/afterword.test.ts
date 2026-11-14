@@ -70,6 +70,7 @@ test("command browses saved messages across projects without generating or modif
 			const insert = db.prepare("INSERT INTO afterwords (session_id, context_hash, task_id, reason, cwd, model, created_at, note) VALUES (?, ?, ?, ?, ?, ?, ?, ?)");
 			for (let i = 1; i <= 7; i++) insert.run(`session-${i}`, `hash-${i}`, i === 7 ? 381 : null,
 				i === 7 ? "done" : "quit", `/project-${i}`, "test/model", "2026-06-01T12:00:00.000Z", note(i));
+			db.prepare("UPDATE afterwords SET model = 'test/other-model', thinking_level = 'minimal' WHERE id = 7").run();
 			const before = db.prepare("SELECT * FROM afterwords ORDER BY id").all();
 			let lists = 0;
 			let savedList: string[];
@@ -79,6 +80,8 @@ test("command browses saved messages across projects without generating or modif
 					lists++;
 					if (lists === 1) {
 						assert.match(initial, /7 saved · newest first/);
+						assert.match(initial, /#7 · 2026-06-01 12:00 · test\/other-model · thinking: minimal/);
+						assert.match(initial, /#6 · 2026-06-01 12:00 · test\/model · thinking: unknown/);
 						assert.deepEqual([...initial.matchAll(/#(\d+) ·/g)].map((match) => Number(match[1])), [7, 6, 5, 4, 3, 2, 1]);
 						for (let i = 1; i <= 7; i++) assert.ok(compact(initial).includes(compact(note(i))), `Full text of note ${i}, including beyond 60 characters`);
 						assert.doesNotMatch(initial, /…|\.\.\./, "No preview ellipsis");
@@ -109,9 +112,11 @@ test("command browses saved messages across projects without generating or modif
 			assert.equal(details.length, 2);
 			assert.match(details[0], /Afterword #7/);
 			assert.match(details[0], /future model conversations\./);
+			assert.match(compact(details[0]), /test\/other-model·thinking:minimal/);
 			assert.match(details[0], /task 381/);
 			assert.match(details[0], /\/project-7/);
 			assert.match(details[1], /Afterword #2/);
+			assert.match(compact(details[1]), /test\/model·thinking:unknown/);
 			assert.doesNotMatch(details[1], /task /);
 			assert.deepEqual(db.prepare("SELECT * FROM afterwords ORDER BY id").all(), before);
 			const longNote = `BEGIN ${Array(18).fill("界e\u0301".repeat(34)).join(" ")} END`;
@@ -150,9 +155,12 @@ test("command browses saved messages across projects without generating or modif
 					const narrow = render(30);
 					assert.ok(narrow.length <= 13, "Narrow resized list stays below rows minus five");
 					component.handleInput("\u001b[6~");
-					const narrowText = render(30);
-					assert.ok(narrowText.length <= 13, "Paging keeps the narrow list bounded");
-					assert.match(plain(narrowText).join("\n"), /BEGIN/, "Narrow list can scroll from the selected label into its text");
+					let narrowText = render(30);
+					for (let i = 0; i < 10 && !/BEGIN/.test(plain(narrowText).join("\n")); i++) {
+						component.handleInput("\u001b[6~"); narrowText = render(30);
+						assert.ok(narrowText.length <= 13, "Paging keeps the narrow list bounded");
+					}
+					assert.match(plain(narrowText).join("\n"), /BEGIN/, "Narrow list can scroll from the wrapped metadata into its text");
 					terminal.rows = 24;
 					render(40);
 					component.handleInput("\u001b[6~");
@@ -182,6 +190,45 @@ test("command browses saved messages across projects without generating or modif
 			assert.match(notices.pop()!, /could not be read/);
 		} finally { db.close(); }
 	} finally {
+		if (previous === undefined) delete process.env.PI_CODING_AGENT_DIR;
+		else process.env.PI_CODING_AGENT_DIR = previous;
+		rmSync(temp, { recursive: true, force: true });
+	}
+});
+
+test("legacy databases retain saved models and unknown thinking levels across repeated opens", async () => {
+	const temp = mkdtempSync("/tmp/pi-afterword-upgrade-");
+	const previous = process.env.PI_CODING_AGENT_DIR;
+	process.env.PI_CODING_AGENT_DIR = temp;
+	mkdirSync(join(temp, "afterword"));
+	const db = new DatabaseSync(join(temp, "afterword", "afterword.db"));
+	try {
+		db.exec(`CREATE TABLE afterwords (
+			id INTEGER PRIMARY KEY, session_id TEXT NOT NULL, context_hash TEXT NOT NULL,
+			task_id INTEGER, reason TEXT NOT NULL, cwd TEXT NOT NULL, model TEXT NOT NULL,
+			created_at TEXT NOT NULL, note TEXT NOT NULL, UNIQUE (session_id, context_hash)
+		);
+		INSERT INTO afterwords VALUES (1, 'session', 'hash', NULL, 'quit', '/project',
+			'legacy/original-model', '2026-06-01T12:00:00.000Z', 'Keep the verified lesson.');`);
+		const original = db.prepare("SELECT * FROM afterwords").get();
+		let command: any;
+		afterword({ registerCommand: (_name: string, definition: any) => { command = definition; }, on: () => {} });
+		const ctx = { mode: "tui", ui: {
+			notify: () => assert.fail("Legacy notes should remain browsable"),
+			custom: async (factory: Function) => {
+				const component = factory({ terminal: { rows: 30 }, requestRender: () => {} }, themeModule.theme, getKeybindings(), () => {});
+				const text = component.render(120).map(stripVTControlCharacters).join("\n");
+				assert.match(text, /#1 · 2026-06-01 12:00 · legacy\/original-model · thinking: unknown/);
+				assert.match(text, /Keep the verified lesson\./);
+			},
+		} };
+		await command.handler("", ctx);
+		await command.handler("", ctx);
+		assert.equal(db.prepare("SELECT thinking_level FROM afterwords").get()!.thinking_level, null);
+		const { thinking_level, ...saved } = db.prepare("SELECT * FROM afterwords").get()!;
+		assert.deepEqual(saved, { ...original });
+	} finally {
+		db.close();
 		if (previous === undefined) delete process.env.PI_CODING_AGENT_DIR;
 		else process.env.PI_CODING_AGENT_DIR = previous;
 		rmSync(temp, { recursive: true, force: true });
@@ -270,7 +317,7 @@ test("afterwords survive Done and quit once, reject invalid output, and cannot s
 	};
 	const ctx = {
 		mode: "tui", hasUI: true, cwd: temp, sessionManager: session,
-		model: { provider: "test", id: "afterword", contextWindow: 32768 },
+		model: { provider: "test", id: "afterword", contextWindow: 32768, reasoning: true },
 		modelRegistry: { streamSimple(model: unknown, context: any, options: any) {
 			calls++;
 			assert.equal(model, ctx.model);
@@ -282,7 +329,7 @@ test("afterwords survive Done and quit once, reject invalid output, and cannot s
 			assert.match(context.messages[0].content, /Avoid PR status, test counts, completion summaries, and routine next steps/);
 			assert.match(context.messages[0].content, /Maximum 30 whitespace-separated words/);
 			assert.ok(context.messages[1].content.length <= 64032);
-			assert.equal(options.reasoning, "minimal");
+			assert.equal(options.reasoning, ctx.model.reasoning ? "minimal" : undefined);
 			assert.ok(options.signal instanceof AbortSignal);
 			return { result: provider };
 		} },
@@ -339,6 +386,7 @@ test("afterwords survive Done and quit once, reject invalid output, and cannot s
 		assert.equal(saved[0].reason, "done");
 		assert.equal(saved[0].session_id, session.getSessionId());
 		assert.equal(saved[0].model, "test/afterword");
+		assert.equal(saved[0].thinking_level, "minimal");
 		assert.equal(statSync(path).mode & 0o777, 0o600);
 		assert.equal(statSync(dirname(path)).mode & 0o777, 0o700);
 		assert.equal(listeners.size, 0, "Shutdown detaches completion listener");
@@ -346,11 +394,13 @@ test("afterwords survive Done and quit once, reject invalid output, and cannot s
 		await done();
 		assert.equal(calls, 1, "SQLite deduplication survives extension reload");
 		append("new information");
+		ctx.model.reasoning = false;
 		note = "New verified information can produce another afterword in the same session.";
 		await handlers.get("session_shutdown")!({ reason: "quit" }, ctx);
 		saved = rows();
 		assert.equal(saved.length, 2);
 		assert.equal(saved[1].reason, "quit");
+		assert.equal(saved[1].thinking_level, "off");
 		assert.equal(saved[1].task_id, null);
 		await handlers.get("session_start")!({ reason: "startup" }, ctx);
 		append("invalid response");
@@ -401,10 +451,12 @@ test("afterwords survive Done and quit once, reject invalid output, and cannot s
 		const keep = session.appendMessage({ role: "user", content: "Continue after compaction", timestamp: Date.now() });
 		session.appendCompaction("Verified queue isolation; remaining checks pending.", keep, 1000);
 		assert.deepEqual(session.buildSessionProjection().messages.map((message: any) => message.role), ["compactionSummary", "user"]);
-		provider = async () => result();
 		note = "Queue isolation was verified before compaction; finish the remaining checks.";
+		provider = async () => ({ ...result(), provider: "physical", model: "routed-alias", responseModel: "resolved-model", thinkingLevel: "low" });
 		await handlers.get("session_shutdown")!({ reason: "quit" }, ctx);
 		assert.equal(rows().length, 3, "Compacted-away assistant messages still support an afterword");
+		assert.equal(rows()[2].model, "physical/resolved-model", "Prefer the provider-reported generating model over the routed alias");
+		assert.equal(rows()[2].thinking_level, "low");
 		await handlers.get("session_start")!({ reason: "reload" }, ctx);
 		await handlers.get("session_shutdown")!({ reason: "reload" }, ctx);
 		await handlers.get("session_start")!({ reason: "startup" }, { ...ctx, mode: "rpc" });

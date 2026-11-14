@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.7.0
+
+- Show each afterword's generating model and thinking level beside its ID and date, and in details.
+- Save generation thinking levels; automatically upgrade existing databases, leaving older levels unknown.
+
 ## 0.6.0
 
 - First standalone Pi package, extracted without behavior changes from the local extension.
