@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { chmodSync, closeSync, mkdirSync, openSync, statSync } from "node:fs";
 import { join } from "node:path";
+import { clampThinkingLevel } from "@earendil-works/pi-ai";
 import { convertToLlm, DynamicBorder, ExtensionSelectorComponent, getAgentDir, keyHint, rawKeyHint, serializeConversation, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Container, ScrollView, Spacer, Text } from "@earendil-works/pi-tui";
 
@@ -31,10 +32,14 @@ async function database() {
 				reason TEXT NOT NULL,
 				cwd TEXT NOT NULL,
 				model TEXT NOT NULL,
+				thinking_level TEXT,
 				created_at TEXT NOT NULL,
 				note TEXT NOT NULL,
 				UNIQUE (session_id, context_hash)
 			)`);
+		if (!db.prepare("PRAGMA table_info(afterwords)").all().some((column) => column.name === "thinking_level")) {
+			db.exec("ALTER TABLE afterwords ADD COLUMN thinking_level TEXT");
+		}
 		return db;
 	} catch (error) { db.close(); throw error; }
 }
@@ -70,12 +75,13 @@ async function record(ctx: ExtensionContext, state: NonNullable<ReturnType<typeo
 	const maxChars = Math.min(CONTEXT_CHARS, Math.floor((model.contextWindow - 2048) / 2));
 	if (maxChars < 256) throw new Error("Session context window too small");
 	const history = conversation.length > maxChars ? `[Earlier conversation omitted]\n${conversation.slice(-maxChars)}` : conversation;
+	const thinkingLevel = clampThinkingLevel(model, "minimal");
 	const result = await ctx.modelRegistry.streamSimple(model, {
 		messages: [
 			{ role: "system", content: INSTRUCTION, timestamp: Date.now() },
 			{ role: "user", content: history, timestamp: Date.now() },
 		],
-	}, { reasoning: "minimal", maxTokens: 1024, cacheRetention: "none", sessionId: randomUUID(), signal }).result();
+	}, { reasoning: thinkingLevel === "off" ? undefined : thinkingLevel, maxTokens: 1024, cacheRetention: "none", sessionId: randomUUID(), signal }).result();
 	check();
 	if (result.stopReason !== "stop") throw new Error("Incomplete afterword");
 	const note = result.content.filter((block) => block.type === "text").map((block) => block.text).join(" ").replace(/\s+/gu, " ").trim();
@@ -84,8 +90,8 @@ async function record(ctx: ExtensionContext, state: NonNullable<ReturnType<typeo
 	try {
 		db.exec("BEGIN IMMEDIATE"); // Never wait for locks during shutdown.
 		check();
-		db.prepare("INSERT OR IGNORE INTO afterwords (session_id, context_hash, task_id, reason, cwd, model, created_at, note) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")
-			.run(sessionId, hash, taskId ?? null, reason, cwd, `${model.provider}/${model.id}`, new Date().toISOString(), note);
+		db.prepare("INSERT OR IGNORE INTO afterwords (session_id, context_hash, task_id, reason, cwd, model, thinking_level, created_at, note) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)")
+			.run(sessionId, hash, taskId ?? null, reason, cwd, `${result.provider ?? model.provider}/${result.model ?? model.id}`, result.thinkingLevel ?? thinkingLevel, new Date().toISOString(), note);
 		check();
 		db.exec("COMMIT");
 	} catch (error) {
@@ -107,7 +113,7 @@ export default function (pi: ExtensionAPI): void {
 			try {
 				const db = await database();
 				try {
-					notes = db.prepare("SELECT id, note, created_at, cwd, reason, task_id FROM afterwords ORDER BY created_at DESC, id DESC").all();
+					notes = db.prepare("SELECT id, note, created_at, cwd, reason, task_id, model, thinking_level FROM afterwords ORDER BY created_at DESC, id DESC").all();
 				} finally { db.close(); }
 			} catch {
 				ctx.ui.notify("Saved afterwords could not be read.", "error");
@@ -153,7 +159,7 @@ export default function (pi: ExtensionAPI): void {
 							for (const [i, row] of notes.entries()) {
 								starts.push(lines.length);
 								const active = i === selected;
-								const label = theme.fg(active ? "accent" : "muted", `#${row.id} · ${String(row.created_at).slice(0, 16).replace("T", " ")}`);
+								const label = theme.fg(active ? "accent" : "muted", `#${row.id} · ${String(row.created_at).slice(0, 16).replace("T", " ")} · ${row.model} · thinking: ${row.thinking_level ?? "unknown"}`);
 								const text = new Text(`${label}\n${theme.fg(active ? "accent" : "text", String(row.note))}`, 0, 0);
 								for (const [j, line] of text.render(width - indent).entries()) {
 									const prefix = active && j === 0 && indent === 3 ? theme.fg("accent", " → ") : " ".repeat(indent);
@@ -198,7 +204,7 @@ export default function (pi: ExtensionAPI): void {
 				if (index === undefined) return;
 				const row = notes[index];
 				await ctx.ui.custom<void>((tui, _theme, keybindings, done) => {
-					const text = new Text(`${row.note}\n\n${row.created_at} · ${row.reason}${row.task_id === null ? "" : ` · task ${row.task_id}`}\n${row.cwd}`, 0, 0);
+					const text = new Text(`${row.note}\n\n${row.created_at} · ${row.model} · thinking: ${row.thinking_level ?? "unknown"}\n${row.reason}${row.task_id === null ? "" : ` · task ${row.task_id}`}\n${row.cwd}`, 0, 0);
 					const scroll = new ScrollView(text, { scrollbar: "hidden" });
 					return {
 						capturesViewportInput: true,

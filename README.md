@@ -26,21 +26,24 @@ pi install npm:@kvidzibo/pi-afterword
 
 Run `/reload` in existing sessions. If migrating from the standalone
 `pi-afterword.ts`, remove its old `extensions` entry first: do not load both.
-Existing notes stay in the same database; no migration is needed.
+Existing notes stay in the same database; schema upgrades are automatic.
 
 ## Use
 
 At interactive startup, `Afterwords: N` shows the saved-note count without adding
 model context. `/pi-afterword` opens a read-only list, newest first. Arrows select,
 Page Up/Down scroll, Enter shows details, and Escape returns or closes. Browsing
-makes no model requests and does not inject notes into the conversation.
+makes no model requests and does not inject notes into the conversation. Each note's
+header shows its generating model and thinking level; older notes without a saved
+thinking level show `unknown`.
 
 Generation requires **10 assistant turns on the active branch**, including
 tool-call responses and compacted turns. Eligible interactive quit (including
 handled SIGTERM/SIGHUP) and successful Pinote Done request one lesson of at most
-30 whitespace-separated words from the current model, with minimal reasoning and
-no tools. It prefers verified causes/fixes, surprising constraints or failed
-approaches; otherwise it records an important decision and its rationale.
+30 whitespace-separated words from the current model, with minimal reasoning
+(adjusted to supported levels; off for non-reasoning models) and no tools. It
+prefers verified causes/fixes, surprising constraints or failed approaches;
+otherwise it records an important decision and its rationale.
 
 The request uses up to the last 64,000 conversation characters, less for small
 context windows; images, thinking and system instructions are omitted. There is
@@ -62,8 +65,8 @@ service or runtime dependency is required. The directory and database use
 owner-only permissions. Stop Pi sessions before backing up or moving the database.
 
 The database is **local and unencrypted**. Notes and metadata (session ID,
-conversation hash, project directory, model, timestamp, trigger and optional task
-ID) can contain sensitive project information despite the no-secrets instruction.
+conversation hash, project directory, model, thinking level, timestamp, trigger
+and optional task ID) can contain sensitive project information despite the no-secrets instruction.
 Generation sends conversation excerpts to your configured model provider.
 
 ## Development
