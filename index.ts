@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import { chmodSync, closeSync, mkdirSync, openSync, statSync } from "node:fs";
+import { chmodSync, closeSync, mkdirSync, openSync, statSync, writeSync } from "node:fs";
 import { join } from "node:path";
 import { clampThinkingLevel } from "@earendil-works/pi-ai";
 import { convertToLlm, DynamicBorder, ExtensionSelectorComponent, getAgentDir, keyHint, rawKeyHint, serializeConversation, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
@@ -14,7 +14,7 @@ type ShutdownTrigger = "quit" | "new";
 type Reason = ShutdownTrigger | "done";
 
 // /new replaces the chat pane and extension instance, but reuses the loaded module.
-let newSessionNotice: { previousFile?: string; message: string } | undefined;
+const newSessionNotices = new Map<string | undefined, string[]>();
 
 function isShutdownTrigger(reason: unknown): reason is ShutdownTrigger {
 	return reason === "quit" || reason === "new";
@@ -266,9 +266,9 @@ export default function (pi: ExtensionAPI): void {
 			if (signal.aborted) onAbort();
 			timer = setTimeout(() => controller.abort(), Math.max(0, deadline - performance.now()));
 		});
+		const quitting = () => shuttingDown === "quit" || source?.reason === "quit";
 		const notify = (message: string) => {
-			// Pi stops the TUI before normal quit hooks run.
-			if (shuttingDown === "quit" || source?.reason === "quit") console.log(message);
+			if (quitting() && !process.stdin.isRaw) console.log(message);
 			else ctx.ui.notify(message, "info");
 		};
 		const work = Promise.race([record(ctx, state, reason, taskId, signal, deadline, () => notify("Generating afterword…")), interrupted])
@@ -276,7 +276,15 @@ export default function (pi: ExtensionAPI): void {
 				if (!note) return;
 				const message = `Afterword saved:\n${note}`;
 				if (shuttingDown === "new" || source?.reason === "new") {
-					newSessionNotice = { previousFile: ctx.sessionManager.getSessionFile(), message };
+					const file = ctx.sessionManager.getSessionFile();
+					const notices = newSessionNotices.get(file) ?? [];
+					notices.push(message);
+					newSessionNotices.set(file, notices);
+				} else if (quitting() && process.stdin.isRaw) {
+					// Signal shutdown runs before Pi restores the fullscreen terminal.
+					process.once("exit", () => {
+						try { writeSync(1, `${message}\n`); } catch { /* Terminal disconnected. */ }
+					});
 				} else notify(message);
 			})
 			.catch(() => {
@@ -301,10 +309,13 @@ export default function (pi: ExtensionAPI): void {
 		lifetime = new AbortController();
 		shuttingDown = undefined;
 		if (ctx.mode !== "tui") return;
-		if (event.reason === "new" && newSessionNotice && newSessionNotice.previousFile === event.previousSessionFile) {
-			ctx.ui.notify(newSessionNotice.message, "info");
+		if (event.reason === "new") {
+			const notices = newSessionNotices.get(event.previousSessionFile);
+			if (notices) {
+				newSessionNotices.delete(event.previousSessionFile);
+				ctx.ui.notify(notices.join("\n\n"), "info");
+			}
 		}
-		newSessionNotice = undefined;
 		unsubscribe = pi.events.on("pinote:task-completed", (data: unknown) => {
 			if (!data || typeof data !== "object") return;
 			const event = data as Completion;
