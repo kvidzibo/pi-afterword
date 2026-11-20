@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.9.0
+
+- Show when afterword generation starts and print the saved note after a successful write.
+
 ## 0.8.0
 
 - Save an afterword from the outgoing conversation on interactive `/new`, with the same eligibility and deduplication as quit.

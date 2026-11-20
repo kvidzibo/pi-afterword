@@ -45,6 +45,11 @@ handled SIGTERM/SIGHUP), `/new` (outgoing session), and successful Pinote Done r
 prefers verified causes/fixes, surprising constraints or failed approaches;
 otherwise it records an important decision and its rationale.
 
+When a request starts, Pi shows `Generating afterword…`. After SQLite commits a new
+note, Pi prints `Afterword saved:` followed by the exact note. On `/new`, the
+confirmation appears in the new session; on quit it prints to the terminal.
+Skipped or already-saved conversations produce neither message.
+
 The request uses up to the last 64,000 conversation characters, less for small
 context windows; images, thinking and system instructions are omitted. There is
 one request with a 20-second deadline and no retries. Empty, incomplete or
