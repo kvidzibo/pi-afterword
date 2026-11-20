@@ -1,7 +1,7 @@
 {
   "name": "@kvidzibo/pi-afterword",
-  "version": "0.7.0",
-  "description": "Save durable conversation lessons on Pi quit or Pinote Done, and browse them with /pi-afterword.",
+  "version": "0.8.0",
+  "description": "Save durable conversation lessons on /new, quit, or Pinote Done, and browse them with /pi-afterword.",
   "type": "module",
   "license": "MIT",
   "author": "Tomas Rackauskas",

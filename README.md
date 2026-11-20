@@ -1,6 +1,6 @@
 # Pi Afterword
 
-Save one durable lesson from a Pi conversation on quit or successful Pinote Done.
+Save one durable lesson from a Pi conversation on `/new`, quit, or successful Pinote Done.
 Browse saved notes across projects with **`/pi-afterword`**. Notes are local, not
 automatically injected into future conversations.
 
@@ -39,7 +39,7 @@ thinking level show `unknown`.
 
 Generation requires **10 assistant turns on the active branch**, including
 tool-call responses and compacted turns. Eligible interactive quit (including
-handled SIGTERM/SIGHUP) and successful Pinote Done request one lesson of at most
+handled SIGTERM/SIGHUP), `/new` (outgoing session), and successful Pinote Done request one lesson of at most
 30 whitespace-separated words from the current model, with minimal reasoning
 (adjusted to supported levels; off for non-reasoning models) and no tools. It
 prefers verified causes/fixes, surprising constraints or failed approaches;
@@ -49,9 +49,9 @@ The request uses up to the last 64,000 conversation characters, less for small
 context windows; images, thinking and system instructions are omitted. There is
 one request with a 20-second deadline and no retries. Empty, incomplete or
 oversized responses are rejected. Identical conversation text in the same session
-is recorded once, including Done followed by quit or reload/resume.
+is recorded once, including Done followed by `/new` or quit.
 
-Reload, session switching/forking, delegated/review children, short conversations
+Reload, resuming or forking a session, delegated/review children, short conversations
 and noninteractive runs do not generate notes. Crashes, SIGKILL, power loss or
 terminal failure may prevent saving. Provider and database failures do not block
 on retries; synchronous filesystem calls cannot be preempted by JavaScript timers.
