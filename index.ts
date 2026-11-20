@@ -13,6 +13,9 @@ const INSTRUCTION = "Leave one durable, non-obvious lesson for future agents fro
 type ShutdownTrigger = "quit" | "new";
 type Reason = ShutdownTrigger | "done";
 
+// /new replaces the chat pane and extension instance, but reuses the loaded module.
+let newSessionNotice: { previousFile?: string; message: string } | undefined;
+
 function isShutdownTrigger(reason: unknown): reason is ShutdownTrigger {
 	return reason === "quit" || reason === "new";
 }
@@ -63,7 +66,7 @@ function snapshot(ctx: ExtensionContext) {
 	return { conversation, hash, sessionId: ctx.sessionManager.getSessionId(), cwd: ctx.cwd, model: ctx.model };
 }
 
-async function record(ctx: ExtensionContext, state: NonNullable<ReturnType<typeof snapshot>>, reason: Reason, taskId: number | undefined, signal: AbortSignal, deadline: number): Promise<void> {
+async function record(ctx: ExtensionContext, state: NonNullable<ReturnType<typeof snapshot>>, reason: Reason, taskId: number | undefined, signal: AbortSignal, deadline: number, onGenerating: () => void): Promise<string | undefined> {
 	const check = () => {
 		signal.throwIfAborted();
 		if (performance.now() >= deadline) throw new Error("Afterword deadline exceeded");
@@ -81,6 +84,7 @@ async function record(ctx: ExtensionContext, state: NonNullable<ReturnType<typeo
 	if (maxChars < 256) throw new Error("Session context window too small");
 	const history = conversation.length > maxChars ? `[Earlier conversation omitted]\n${conversation.slice(-maxChars)}` : conversation;
 	const thinkingLevel = clampThinkingLevel(model, "minimal");
+	onGenerating();
 	const result = await ctx.modelRegistry.streamSimple(model, {
 		messages: [
 			{ role: "system", content: INSTRUCTION, timestamp: Date.now() },
@@ -95,10 +99,11 @@ async function record(ctx: ExtensionContext, state: NonNullable<ReturnType<typeo
 	try {
 		db.exec("BEGIN IMMEDIATE"); // Never wait for locks during shutdown.
 		check();
-		db.prepare("INSERT OR IGNORE INTO afterwords (session_id, context_hash, task_id, reason, cwd, model, thinking_level, created_at, note) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)")
+		const inserted = db.prepare("INSERT OR IGNORE INTO afterwords (session_id, context_hash, task_id, reason, cwd, model, thinking_level, created_at, note) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)")
 			.run(sessionId, hash, taskId ?? null, reason, cwd, `${result.provider ?? model.provider}/${result.responseModel ?? result.model ?? model.id}`, result.thinkingLevel ?? thinkingLevel, new Date().toISOString(), note);
 		check();
 		db.exec("COMMIT");
+		return inserted.changes ? note : undefined;
 	} catch (error) {
 		try { db.exec("ROLLBACK"); } catch { /* BEGIN may have failed. */ }
 		throw error;
@@ -234,6 +239,7 @@ export default function (pi: ExtensionAPI): void {
 			}
 		},
 	});
+	let shuttingDown: ShutdownTrigger | undefined;
 	let unsubscribe: (() => void) | undefined;
 	let lifetime = new AbortController();
 	const active = new Map<string, Promise<void>>();
@@ -260,7 +266,19 @@ export default function (pi: ExtensionAPI): void {
 			if (signal.aborted) onAbort();
 			timer = setTimeout(() => controller.abort(), Math.max(0, deadline - performance.now()));
 		});
-		const work = Promise.race([record(ctx, state, reason, taskId, signal, deadline), interrupted])
+		const notify = (message: string) => {
+			// Pi stops the TUI before normal quit hooks run.
+			if (shuttingDown === "quit" || source?.reason === "quit") console.log(message);
+			else ctx.ui.notify(message, "info");
+		};
+		const work = Promise.race([record(ctx, state, reason, taskId, signal, deadline, () => notify("Generating afterword…")), interrupted])
+			.then((note) => {
+				if (!note) return;
+				const message = `Afterword saved:\n${note}`;
+				if (shuttingDown === "new" || source?.reason === "new") {
+					newSessionNotice = { previousFile: ctx.sessionManager.getSessionFile(), message };
+				} else notify(message);
+			})
 			.catch(() => {
 				// Never include provider errors or generated text in diagnostics.
 				if (!lifetime.signal.aborted && !source?.aborted) {
@@ -281,7 +299,12 @@ export default function (pi: ExtensionAPI): void {
 	pi.on("session_start", async (event, ctx) => {
 		unsubscribe?.();
 		lifetime = new AbortController();
+		shuttingDown = undefined;
 		if (ctx.mode !== "tui") return;
+		if (event.reason === "new" && newSessionNotice && newSessionNotice.previousFile === event.previousSessionFile) {
+			ctx.ui.notify(newSessionNotice.message, "info");
+		}
+		newSessionNotice = undefined;
 		unsubscribe = pi.events.on("pinote:task-completed", (data: unknown) => {
 			if (!data || typeof data !== "object") return;
 			const event = data as Completion;
@@ -310,7 +333,10 @@ export default function (pi: ExtensionAPI): void {
 	});
 	pi.on("session_shutdown", async (event, ctx) => {
 		try {
-			if (isShutdownTrigger(event.reason) && ctx.mode === "tui") await leaveAfterword(ctx, event.reason);
+			if (isShutdownTrigger(event.reason) && ctx.mode === "tui") {
+				shuttingDown = event.reason;
+				await leaveAfterword(ctx, event.reason);
+			}
 		} catch {
 			console.error("pi-afterword: note was not saved (session context unavailable).");
 		} finally {

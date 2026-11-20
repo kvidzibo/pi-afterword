@@ -298,6 +298,8 @@ test("afterwords survive Done and quit once, reject invalid output, and cannot s
 	const previous = process.env.PI_CODING_AGENT_DIR;
 	process.env.PI_CODING_AGENT_DIR = temp;
 	const path = join(temp, "afterword", "afterword.db");
+	const terminal: string[] = [];
+	t.mock.method(console, "log", (message: string) => terminal.push(message));
 	const handlers = new Map<string, Function>();
 	const listeners = new Map<string, Function>();
 	const notices: string[] = [];
@@ -362,6 +364,7 @@ test("afterwords survive Done and quit once, reject invalid output, and cannot s
 		await done();
 		await handlers.get("session_shutdown")!({ reason: "quit" }, ctx);
 		assert.equal(calls, 0, "Done and quit skip nine agent turns; abandoned branches do not count");
+		assert.deepEqual(notices.splice(0), ["Afterwords: 0"]);
 		assert.equal(existsSync(path), false, "Below the minimum does not create storage");
 		await handlers.get("session_start")!({ reason: "reload" }, ctx);
 		session.appendMessage({ role: "assistant", content: [{ type: "toolCall", id: "check", name: "bash", arguments: { command: "true" } }], timestamp: Date.now(), stopReason: "toolUse" });
@@ -372,6 +375,8 @@ test("afterwords survive Done and quit once, reject invalid output, and cannot s
 		const completing = done(pinoteLifetime.signal);
 		for (let i = 0; i < 100 && !finishDone; i++) await nextTick();
 		assert.equal(typeof finishDone, "function");
+		assert.deepEqual(notices.splice(0), ["Generating afterword…"]);
+		assert.deepEqual(terminal, []);
 		pinoteLifetime.abort("quit"); // Pinote’s earlier shutdown handler tears down its lifetime first.
 		const quitting = handlers.get("session_shutdown")!({ reason: "quit" }, ctx);
 		finishDone(result());
@@ -381,6 +386,7 @@ test("afterwords survive Done and quit once, reject invalid output, and cannot s
 		let saved = rows();
 		assert.equal(saved.length, 1);
 		assert.equal(saved[0].note, note);
+		assert.deepEqual(terminal.splice(0), [`Afterword saved:\n${saved[0].note}`]);
 		assert.equal(String(saved[0].note).split(" ").length, 30);
 		assert.equal(saved[0].task_id, 381);
 		assert.equal(saved[0].reason, "done");
@@ -395,6 +401,8 @@ test("afterwords survive Done and quit once, reject invalid output, and cannot s
 		assert.equal(calls, 1, "SQLite deduplication survives extension reload");
 		await handlers.get("session_shutdown")!({ reason: "new" }, ctx);
 		assert.equal(calls, 1, "/new does not regenerate an unchanged Done lesson");
+		assert.deepEqual(notices, []);
+		assert.deepEqual(terminal, []);
 		await handlers.get("session_start")!({ reason: "resume" }, ctx);
 		append("new information");
 		ctx.model.reasoning = false;
@@ -406,12 +414,14 @@ test("afterwords survive Done and quit once, reject invalid output, and cannot s
 		assert.equal(saved[1].session_id, session.getSessionId());
 		assert.equal(saved[1].thinking_level, "off");
 		assert.equal(saved[1].task_id, null);
-		await handlers.get("session_start")!({ reason: "startup" }, ctx);
+		afterword(pi); // /new binds a fresh extension instance before showing the note.
+		await handlers.get("session_start")!({ reason: "new", previousSessionFile: session.getSessionFile() }, ctx);
+		assert.deepEqual(notices.splice(0), ["Generating afterword…", `Afterword saved:\n${saved[1].note}`]);
 		append("invalid response");
 		note = Array(31).fill("word").join(" ");
 		await done();
 		assert.equal(rows().length, 2, "Overlong text is rejected, not silently cut");
-		assert.match(notices.at(-1)!, /not saved/);
+		assert.deepEqual(notices.splice(0), ["Generating afterword…", "Afterword was not saved. Task completion will continue."]);
 		const projection = session.buildSessionProjection.bind(session);
 		session.buildSessionProjection = () => { throw new Error("isolated snapshot failure"); };
 		const failedSnapshot = done(); // Must register its rejection rather than throw from the bus listener.
@@ -461,6 +471,7 @@ test("afterwords survive Done and quit once, reject invalid output, and cannot s
 		assert.equal(rows().length, 3, "Compacted-away assistant messages still support an afterword");
 		assert.equal(rows()[2].model, "physical/resolved-model", "Prefer the provider-reported generating model over the routed alias");
 		assert.equal(rows()[2].thinking_level, "low");
+		assert.deepEqual(terminal, ["Generating afterword…", `Afterword saved:\n${rows()[2].note}`]);
 		await handlers.get("session_start")!({ reason: "reload" }, ctx);
 		await handlers.get("session_shutdown")!({ reason: "reload" }, ctx);
 		await handlers.get("session_start")!({ reason: "startup" }, { ...ctx, mode: "rpc" });
