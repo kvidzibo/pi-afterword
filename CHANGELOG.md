@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.8.0
+
+- Save an afterword from the outgoing conversation on interactive `/new`, with the same eligibility and deduplication as quit.
+
 ## 0.7.0
 
 - Show each afterword's generating model and thinking level beside its ID and date, and in details.
