@@ -39,8 +39,8 @@ thinking level show `unknown`.
 
 Generation requires **10 assistant turns on the active branch**, including
 tool-call responses and compacted turns. Eligible interactive quit (including
-handled SIGTERM/SIGHUP), `/new` (outgoing session), and successful Pinote Done request one lesson of at most
-30 whitespace-separated words from the current model, with minimal reasoning
+handled SIGTERM/SIGHUP), `/new` (outgoing session), and successful Pinote Done request one lesson from the
+current model, aiming for 25 words and never saving more than 30, with minimal reasoning
 (adjusted to supported levels; off for non-reasoning models) and no tools. It
 prefers verified causes/fixes, surprising constraints or failed approaches;
 otherwise it records an important decision and its rationale.
@@ -51,16 +51,30 @@ confirmation appears in the new session; on quit it prints to the terminal.
 Skipped or already-saved conversations produce neither message.
 
 The request uses up to the last 64,000 conversation characters, less for small
-context windows; images, thinking and system instructions are omitted. There is
-one request with a 20-second deadline and no retries. Empty, incomplete or
-oversized responses are rejected. Identical conversation text in the same session
-is recorded once, including Done followed by `/new` or quit.
+context windows; images, thinking and system instructions are omitted. A note over
+30 words is never cut: the model is asked to shorten it, up to two more times,
+sending only the rejected note. All requests share one 20-second deadline. Empty,
+incomplete or still-oversized responses are rejected. Identical conversation text
+in the same session is recorded once, including Done followed by `/new` or quit.
 
 Reload, resuming or forking a session, delegated/review children, short conversations
 and noninteractive runs do not generate notes. Crashes, SIGKILL, power loss or
-terminal failure may prevent saving. Provider and database failures do not block
-on retries; synchronous filesystem calls cannot be preempted by JavaScript timers.
+terminal failure may prevent saving. Provider and database failures are not
+retried; synchronous filesystem calls cannot be preempted by JavaScript timers.
 Requests may incur provider charges outside Pi's main-turn usage totals.
+
+### Diagnostics
+
+A failed save names its category, such as `note too long`, `timed out`,
+`model error` or `database error`. Each generation also appends a `pi-afterword`
+custom entry to the session file: outcome, trigger, task ID, model, total duration,
+per-request duration, stop reason and word count, plus the failure category and up
+to 200 characters of the provider or database error. It never contains note text
+and is not sent to the model.
+
+```sh
+jq -c 'select(.customType == "pi-afterword") | .data' <session.jsonl>
+```
 
 ## Storage and privacy
 
@@ -72,6 +86,7 @@ owner-only permissions. Stop Pi sessions before backing up or moving the databas
 The database is **local and unencrypted**. Notes and metadata (session ID,
 conversation hash, project directory, model, thinking level, timestamp, trigger
 and optional task ID) can contain sensitive project information despite the no-secrets instruction.
+Session-file diagnostics can contain provider or database error text.
 Generation sends conversation excerpts to your configured model provider.
 
 ## Development
