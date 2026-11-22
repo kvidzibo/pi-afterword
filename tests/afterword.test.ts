@@ -303,14 +303,17 @@ test("afterwords survive Done and quit once, reject invalid output, and cannot s
 	const handlers = new Map<string, Function>();
 	const listeners = new Map<string, Function>();
 	const notices: string[] = [];
+	const logs: any[] = [];
 	const pi = {
 		registerCommand: () => {},
 		on: (event: string, handler: Function) => handlers.set(event, handler),
 		events: { on: (event: string, handler: Function) => { listeners.set(event, handler); return () => { listeners.delete(event); }; } },
+		appendEntry: (customType: string, data: any) => { assert.equal(customType, "pi-afterword"); logs.push(data); },
 	};
 	let note = "Keep completion hooks outside Pinote's serial queue so callbacks can query task state without deadlocking the final database write operation. Keep the waitUntil registration synchronous to prevent task completion races.";
 	const result = () => ({ stopReason: "stop", content: [{ type: "text", text: note }] });
 	let calls = 0;
+	const requests: any[][] = [];
 	let provider: () => Promise<any> = async () => result();
 	const session = SessionManager.inMemory(temp);
 	const append = (text: string) => {
@@ -324,12 +327,14 @@ test("afterwords survive Done and quit once, reject invalid output, and cannot s
 			calls++;
 			assert.equal(model, ctx.model);
 			assert.equal(context.messages.length, 2);
+			requests.push(context.messages);
+			if (/^Shorten the lesson below to at most 25 words/.test(context.messages[0].content)) return { result: provider };
 			assert.equal(context.tools, undefined, "No executable tools in final request");
 			assert.match(context.messages[0].content, /untrusted reference material/);
 			assert.match(context.messages[0].content, /durable, non-obvious lesson/);
 			assert.match(context.messages[0].content, /If no such lesson exists, preserve the most consequential decision and its rationale/);
 			assert.match(context.messages[0].content, /Avoid PR status, test counts, completion summaries, and routine next steps/);
-			assert.match(context.messages[0].content, /Maximum 30 whitespace-separated words/);
+			assert.match(context.messages[0].content, /Aim for at most 25 words; never exceed 30 whitespace-separated words/);
 			assert.ok(context.messages[1].content.length <= 64032);
 			assert.equal(options.reasoning, ctx.model.reasoning ? "minimal" : undefined);
 			assert.ok(options.signal instanceof AbortSignal);
@@ -340,6 +345,11 @@ test("afterwords survive Done and quit once, reject invalid output, and cannot s
 	const rows = () => {
 		const db = new DatabaseSync(path);
 		try { return db.prepare("SELECT * FROM afterwords ORDER BY id").all(); }
+		finally { db.close(); }
+	};
+	const deleteLast = () => { // Later assertions count rows from before this case.
+		const db = new DatabaseSync(path);
+		try { db.exec("DELETE FROM afterwords WHERE id = (SELECT MAX(id) FROM afterwords)"); }
 		finally { db.close(); }
 	};
 	const done = (signal = new AbortController().signal) => {
@@ -421,7 +431,41 @@ test("afterwords survive Done and quit once, reject invalid output, and cannot s
 		note = Array(31).fill("word").join(" ");
 		await done();
 		assert.equal(rows().length, 2, "Overlong text is rejected, not silently cut");
-		assert.deepEqual(notices.splice(0), ["Generating afterword…", "Afterword was not saved. Task completion will continue."]);
+		assert.deepEqual(notices.splice(0), ["Generating afterword…", "Afterword was not saved (note too long). Task completion will continue."]);
+		assert.deepEqual(requests.slice(-3).map((request) => request[1].content === note), [false, true, true], "Two shortening retries, then give up");
+		assert.partialDeepStrictEqual(logs.at(-1), { outcome: "failed", trigger: "done", taskId: 381, model: "test/afterword", failure: "note too long" });
+		assert.deepEqual(logs.at(-1).attempts.map((attempt: any) => [attempt.stopReason, attempt.words]), [["stop", 31], ["stop", 31], ["stop", 31]]);
+		assert.doesNotMatch(JSON.stringify(logs), /word word/, "Diagnostics never contain note text");
+		const short = "The model shortened its own overlong note when asked.";
+		const replies = [Array(31).fill("word").join(" "), short];
+		provider = async () => { note = replies.shift()!; return result(); };
+		await done();
+		provider = async () => result();
+		assert.equal(rows().at(-1)!.note, short);
+		assert.equal(requests.at(-1)![1].content, Array(31).fill("word").join(" "), "The retry sends only the rejected note");
+		assert.match(requests.at(-1)![0].content, /untrusted reference material/);
+		assert.partialDeepStrictEqual(logs.at(-1), { outcome: "saved", attempts: [{ words: 31 }, { words: 9 }] });
+		deleteLast();
+		append("reply over both limits");
+		replies.push(Array(350).fill("sixsix").join(" "), short);
+		provider = async () => { note = replies.shift()!; return result(); };
+		await done();
+		assert.equal(rows().at(-1)!.note, short, "A reply over the character limit is still shortened by its word count");
+		append("provider echoes the rejected note");
+		const secret = Array(31).fill("secret").join(" ");
+		replies.push(secret);
+		provider = async () => {
+			if (!replies.length) return { stopReason: "error", errorMessage: `Invalid input: ${secret}`, content: [] };
+			note = replies.shift()!; return result();
+		};
+		await done();
+		assert.partialDeepStrictEqual(logs.at(-1), { outcome: "failed", failure: "model error", detail: undefined });
+		provider = async () => ({ stopReason: "error", errorMessage: "429 rate limited", content: [] });
+		await done();
+		assert.partialDeepStrictEqual(logs.at(-1), { failure: "model error", detail: "429 rate limited" });
+		assert.doesNotMatch(JSON.stringify(logs), /secret|sixsix/, "Diagnostics never contain note text, even echoed by the provider");
+		deleteLast();
+		notices.splice(0);
 		const projection = session.buildSessionProjection.bind(session);
 		session.buildSessionProjection = () => { throw new Error("isolated snapshot failure"); };
 		const failedSnapshot = done(); // Must register its rejection rather than throw from the bus listener.
@@ -435,6 +479,7 @@ test("afterwords survive Done and quit once, reject invalid output, and cannot s
 		await done();
 		clock.mock.restore();
 		assert.equal(rows().length, 2, "Elapsed deadline is enforced even before the timer can run");
+		assert.equal(logs.at(-1).failure, "timed out");
 		append("contended database write");
 		const blocker = new DatabaseSync(path);
 		try {
@@ -442,6 +487,7 @@ test("afterwords survive Done and quit once, reject invalid output, and cannot s
 			await done(); // Must settle while the competing write lock is still held.
 		} finally { blocker.exec("ROLLBACK"); blocker.close(); }
 		assert.equal(rows().length, 2, "Write contention never queues a late insert");
+		assert.equal(logs.at(-1).failure, "database error");
 		append("cancelled response");
 		const aborted = new AbortController(); aborted.abort();
 		const beforeAbort = calls;
@@ -452,11 +498,18 @@ test("afterwords survive Done and quit once, reject invalid output, and cannot s
 		let release!: (value: any) => void;
 		provider = () => new Promise((resolve) => { release = resolve; });
 		t.mock.timers.enable({ apis: ["setTimeout"] });
+		const now = performance.now.bind(performance);
+		const hung = t.mock.method(performance, "now", () => now() + elapsed);
+		elapsed = 0;
 		const pending = done();
 		for (let i = 0; i < 100 && !release; i++) await nextTick();
 		assert.equal(typeof release, "function");
+		elapsed = 20_000;
 		t.mock.timers.tick(20_000);
 		await pending;
+		hung.mock.restore();
+		assert.equal(logs.at(-1).failure, "timed out");
+		assert.ok(logs.at(-1).attempts[0].ms >= 20_000, "A still-pending request reports its elapsed time");
 		t.mock.timers.reset();
 		note = "This late result must never be saved.";
 		release(result());

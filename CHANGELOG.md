@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.10.0
+
+- Ask the model to shorten a note over 30 words, up to two more times, instead of discarding it; the prompt now aims for 25 words.
+- Name the failure category when a note is not saved, and log each generation's outcome, timings and word counts to the session file.
+
 ## 0.9.0
 
 - Show when afterword generation starts and print the saved note after a successful write.
