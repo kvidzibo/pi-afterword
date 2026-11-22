@@ -24,7 +24,7 @@ const newSessionNotices = new Map<string | undefined, string[]>();
 function isShutdownTrigger(reason: unknown): reason is ShutdownTrigger {
 	return reason === "quit" || reason === "new";
 }
-type Attempt = { ms: number; stopReason?: string; words?: number };
+type Attempt = { started: number; ms?: number; stopReason?: string; words?: number };
 
 /** Categories are safe to show; detail goes only to the session file. */
 class Failure extends Error {
@@ -109,22 +109,26 @@ async function record(ctx: ExtensionContext, state: NonNullable<ReturnType<typeo
 	];
 	let result, note: string;
 	while (true) {
-		const started = performance.now();
-		const attempt: Attempt = { ms: 0 };
+		const attempt: Attempt = { started: performance.now() };
 		attempts.push(attempt);
+		// A shortening request carries the note, which a provider error may echo: keep its detail out of the log.
+		const safe = (text?: string) => attempts.length === 1 ? text?.slice(0, 200) : undefined;
 		try {
 			result = await ctx.modelRegistry.streamSimple(model, { messages },
 				{ reasoning: thinkingLevel === "off" ? undefined : thinkingLevel, maxTokens: 1024, cacheRetention: "none", sessionId: randomUUID(), signal }).result();
 		} catch (error) {
-			throw signal.aborted ? error : new Failure("model error", detail(error));
-		} finally { attempt.ms = Math.round(performance.now() - started); }
+			throw signal.aborted ? error : new Failure("model error", safe(detail(error)));
+		} finally { attempt.ms = Math.round(performance.now() - attempt.started); }
 		attempt.stopReason = result.stopReason;
 		check();
-		if (result.stopReason !== "stop") throw new Failure(result.stopReason === "error" ? "model error" : "incomplete response", result.errorMessage?.slice(0, 200));
+		if (result.stopReason !== "stop") throw new Failure(result.stopReason === "error" ? "model error" : "incomplete response", safe(result.errorMessage));
 		note = result.content.filter((block) => block.type === "text").map((block) => block.text).join(" ").replace(/\s+/gu, " ").trim();
 		attempt.words = note ? note.split(" ").length : 0;
-		if (!note || note.length > 2000 || /[\u0000-\u001f\u007f-\u009f]/u.test(note)) throw new Failure("invalid note");
-		if (attempt.words <= MAX_WORDS) break;
+		if (!note || /[\u0000-\u001f\u007f-\u009f]/u.test(note)) throw new Failure("invalid note");
+		if (attempt.words <= MAX_WORDS) {
+			if (note.length > 2000) throw new Failure("invalid note");
+			break;
+		}
 		// Overlong text is never cut: the model shortens its own note within the same deadline.
 		if (attempts.length === MAX_ATTEMPTS) throw new Failure("note too long");
 		messages = [
@@ -317,7 +321,9 @@ export default function (pi: ExtensionAPI): void {
 			try {
 				pi.appendEntry("pi-afterword", {
 					outcome, trigger: reason, taskId, model: state.model && `${state.model.provider}/${state.model.id}`,
-					ms: Math.round(performance.now() - deadline + DEADLINE_MS), attempts, failure: failure?.category, detail: failure?.detail,
+					ms: Math.round(performance.now() - deadline + DEADLINE_MS), failure: failure?.category, detail: failure?.detail,
+					// An interrupted request is still pending: report its elapsed time so far.
+					attempts: attempts.map(({ started, ms, ...rest }) => ({ ms: ms ?? Math.round(performance.now() - started), ...rest })),
 				});
 			} catch { /* The session may already be closed or replaced. */ }
 		};

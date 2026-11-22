@@ -69,8 +69,9 @@ A failed save names its category, such as `note too long`, `timed out`,
 `model error` or `database error`. Each generation also appends a `pi-afterword`
 custom entry to the session file: outcome, trigger, task ID, model, total duration,
 per-request duration, stop reason and word count, plus the failure category and up
-to 200 characters of the provider or database error. It never contains note text
-and is not sent to the model.
+to 200 characters of the database error or of a provider error on the first
+request. Shortening requests carry the note, so their provider errors are logged by
+category only. Entries never contain note text and are not sent to the model.
 
 ```sh
 jq -c 'select(.customType == "pi-afterword") | .data' <session.jsonl>
