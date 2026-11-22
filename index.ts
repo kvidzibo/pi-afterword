@@ -109,6 +109,7 @@ async function record(ctx: ExtensionContext, state: NonNullable<ReturnType<typeo
 	];
 	let result, note: string;
 	while (true) {
+		check(); // Never start a request whose result could not be saved.
 		const attempt: Attempt = { started: performance.now() };
 		attempts.push(attempt);
 		// A shortening request carries the note, which a provider error may echo: keep its detail out of the log.
@@ -120,10 +121,10 @@ async function record(ctx: ExtensionContext, state: NonNullable<ReturnType<typeo
 			throw signal.aborted ? error : new Failure("model error", safe(detail(error)));
 		} finally { attempt.ms = Math.round(performance.now() - attempt.started); }
 		attempt.stopReason = result.stopReason;
-		check();
-		if (result.stopReason !== "stop") throw new Failure(result.stopReason === "error" ? "model error" : "incomplete response", safe(result.errorMessage));
 		note = result.content.filter((block) => block.type === "text").map((block) => block.text).join(" ").replace(/\s+/gu, " ").trim();
 		attempt.words = note ? note.split(" ").length : 0;
+		check();
+		if (result.stopReason !== "stop") throw new Failure(result.stopReason === "error" ? "model error" : "incomplete response", safe(result.errorMessage));
 		if (!note || /[\u0000-\u001f\u007f-\u009f]/u.test(note)) throw new Failure("invalid note");
 		if (attempt.words <= MAX_WORDS) {
 			if (note.length > 2000) throw new Failure("invalid note");
@@ -317,7 +318,10 @@ export default function (pi: ExtensionAPI): void {
 		};
 		const attempts: Attempt[] = [];
 		// Session-file diagnostics only: custom entries never reach the model or the conversation hash.
+		let logged = false;
 		const log = (outcome: string, failure?: Failure) => {
+			if (logged) return; // A failed notice must not relabel a saved note.
+			logged = true;
 			try {
 				pi.appendEntry("pi-afterword", {
 					outcome, trigger: reason, taskId, model: state.model && `${state.model.provider}/${state.model.id}`,
