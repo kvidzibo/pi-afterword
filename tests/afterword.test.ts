@@ -78,7 +78,7 @@ test("command browses saved messages across projects without generating or modif
 			const insert = db.prepare("INSERT INTO afterwords (session_id, context_hash, task_id, reason, cwd, model, created_at, note) VALUES (?, ?, ?, ?, ?, ?, ?, ?)");
 			for (let i = 1; i <= 7; i++) insert.run(`session-${i}`, `hash-${i}`, i === 7 ? 381 : null,
 				i === 7 ? "done" : "quit", `/project-${i}`, "test/model", "2026-06-01T12:00:00.000Z", note(i));
-			db.prepare("UPDATE afterwords SET model = 'test/other-model', thinking_level = 'minimal' WHERE id = 7").run();
+			db.prepare("UPDATE afterwords SET model = 'test/other-model', thinking_level = 'minimal', cost = 0.02886 WHERE id = 7").run();
 			const before = db.prepare("SELECT * FROM afterwords ORDER BY id").all();
 			let lists = 0;
 			let savedList: string[];
@@ -88,8 +88,8 @@ test("command browses saved messages across projects without generating or modif
 					lists++;
 					if (lists === 1) {
 						assert.match(initial, /7 saved · newest first/);
-						assert.match(initial, /#7 · 2026-06-01 12:00 · test\/other-model · thinking: minimal/);
-						assert.match(initial, /#6 · 2026-06-01 12:00 · test\/model · thinking: unknown/);
+						assert.match(initial, /#7 · 2026-06-01 12:00 · test\/other-model · thinking: minimal · cost: \$0\.0289/);
+						assert.match(initial, /#6 · 2026-06-01 12:00 · test\/model · thinking: unknown · cost: unknown/);
 						assert.deepEqual([...initial.matchAll(/#(\d+) ·/g)].map((match) => Number(match[1])), [7, 6, 5, 4, 3, 2, 1]);
 						for (let i = 1; i <= 7; i++) assert.ok(compact(initial).includes(compact(note(i))), `Full text of note ${i}, including beyond 60 characters`);
 						assert.doesNotMatch(initial, /…|\.\.\./, "No preview ellipsis");
@@ -120,11 +120,11 @@ test("command browses saved messages across projects without generating or modif
 			assert.equal(details.length, 2);
 			assert.match(details[0], /Afterword #7/);
 			assert.match(details[0], /future model conversations\./);
-			assert.match(compact(details[0]), /test\/other-model·thinking:minimal/);
+			assert.match(compact(details[0]), /test\/other-model·thinking:minimal·cost:\$0\.0289/);
 			assert.match(details[0], /task 381/);
 			assert.match(details[0], /\/project-7/);
 			assert.match(details[1], /Afterword #2/);
-			assert.match(compact(details[1]), /test\/model·thinking:unknown/);
+			assert.match(compact(details[1]), /test\/model·thinking:unknown·cost:unknown/);
 			assert.doesNotMatch(details[1], /task /);
 			assert.deepEqual(db.prepare("SELECT * FROM afterwords ORDER BY id").all(), before);
 			const longNote = `BEGIN ${Array(18).fill("界e\u0301".repeat(34)).join(" ")} END`;
@@ -226,14 +226,14 @@ test("legacy databases retain saved models and unknown thinking levels across re
 			custom: async (factory: Function) => {
 				const component = factory({ terminal: { rows: 30 }, requestRender: () => {} }, themeModule.theme, getKeybindings(), () => {});
 				const text = component.render(120).map(stripVTControlCharacters).join("\n");
-				assert.match(text, /#1 · 2026-06-01 12:00 · legacy\/original-model · thinking: unknown/);
+				assert.match(text, /#1 · 2026-06-01 12:00 · legacy\/original-model · thinking: unknown · cost: unknown/);
 				assert.match(text, /Keep the verified lesson\./);
 			},
 		} };
 		await command.handler("", ctx);
 		await command.handler("", ctx);
-		assert.equal(db.prepare("SELECT thinking_level FROM afterwords").get()!.thinking_level, null);
-		const { thinking_level, ...saved } = db.prepare("SELECT * FROM afterwords").get()!;
+		assert.partialDeepStrictEqual(db.prepare("SELECT thinking_level, cost FROM afterwords").get(), { thinking_level: null, cost: null });
+		const { thinking_level, cost, ...saved } = db.prepare("SELECT * FROM afterwords").get()!;
 		assert.deepEqual(saved, { ...original });
 	} finally {
 		db.close();
@@ -420,13 +420,14 @@ test("afterwords survive Done and quit once, reject invalid output, and cannot s
 		let saved = rows();
 		assert.equal(saved.length, 1);
 		assert.equal(saved[0].note, note);
-		assert.deepEqual(terminal.splice(0), [`Afterword saved:\n${saved[0].note}`]);
+		assert.deepEqual(terminal.splice(0), [`Afterword saved (cost $0.0028):\n${saved[0].note}`]);
 		assert.equal(String(saved[0].note).split(" ").length, 30);
 		assert.equal(saved[0].task_id, 381);
 		assert.equal(saved[0].reason, "done");
 		assert.equal(saved[0].session_id, session.getSessionId());
 		assert.equal(saved[0].model, "test/afterword");
 		assert.equal(saved[0].thinking_level, "high", "The session's thinking level");
+		assert.equal(saved[0].cost, 0.0028);
 		assert.deepEqual(logs.at(-1).attempts.map((attempt: any) => attempt.usage), [usage], "Diagnostics record token usage and cost");
 		assert.equal(statSync(path).mode & 0o777, 0o600);
 		assert.equal(statSync(dirname(path)).mode & 0o777, 0o700);
@@ -452,7 +453,7 @@ test("afterwords survive Done and quit once, reject invalid output, and cannot s
 		assert.equal(saved[1].task_id, null);
 		afterword(pi); // /new binds a fresh extension instance before showing the note.
 		await handlers.get("session_start")!({ reason: "new", previousSessionFile: session.getSessionFile() }, ctx);
-		assert.deepEqual(notices.splice(0), ["Generating afterword…", `Afterword saved:\n${saved[1].note}`]);
+		assert.deepEqual(notices.splice(0), ["Generating afterword…", `Afterword saved (cost $0.0028):\n${saved[1].note}`]);
 		append("invalid response");
 		note = Array(31).fill("word").join(" ");
 		await done();
@@ -471,6 +472,7 @@ test("afterwords survive Done and quit once, reject invalid output, and cannot s
 		assert.equal(rows().at(-1)!.note, short);
 		assert.equal(requests.at(-1)!.at(-2).content[0].text, Array(31).fill("word").join(" "), "The model sees its own rejected note");
 		assert.partialDeepStrictEqual(logs.at(-1), { outcome: "saved", attempts: [{ words: 31, usage }, { words: 9, usage }] });
+		assert.equal(rows().at(-1)!.cost, 0.0056, "Cost includes shortening requests");
 		deleteLast();
 		append("blocked images");
 		const image = { type: "image", data: "aW1hZ2U=", mimeType: "image/png" };
@@ -627,7 +629,7 @@ test("afterwords survive Done and quit once, reject invalid output, and cannot s
 		assert.equal(rows().length, 3, "Compacted-away assistant messages still support an afterword");
 		assert.equal(rows()[2].model, "physical/resolved-model", "Prefer the provider-reported generating model over the routed alias");
 		assert.equal(rows()[2].thinking_level, "medium", "The session's level, not one reported by the provider");
-		assert.deepEqual(terminal, ["Generating afterword…", `Afterword saved:\n${rows()[2].note}`]);
+		assert.deepEqual(terminal, ["Generating afterword…", `Afterword saved (cost $0.0028):\n${rows()[2].note}`]);
 		await handlers.get("session_start")!({ reason: "reload" }, ctx);
 		await handlers.get("session_shutdown")!({ reason: "reload" }, ctx);
 		await handlers.get("session_start")!({ reason: "startup" }, { ...ctx, mode: "rpc" });

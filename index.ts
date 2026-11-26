@@ -23,7 +23,19 @@ const newSessionNotices = new Map<string | undefined, string[]>();
 function isShutdownTrigger(reason: unknown): reason is ShutdownTrigger {
 	return reason === "quit" || reason === "new";
 }
-type Attempt = { started: number; ms?: number; stopReason?: string; words?: number; usage?: unknown };
+type Attempt = { started: number; ms?: number; stopReason?: string; words?: number; usage?: { cost?: { total?: number } } };
+
+/** Pi's estimate for every request behind a note; unknown if any request lacks one. */
+function totalCost(attempts: Attempt[]): number | null {
+	let total = 0;
+	for (const attempt of attempts) {
+		const cost = attempt.usage?.cost?.total;
+		if (typeof cost !== "number" || !Number.isFinite(cost) || cost < 0) return null;
+		total += cost;
+	}
+	return total;
+}
+const formatCost = (cost: unknown) => typeof cost === "number" ? `$${cost.toFixed(4)}` : "unknown";
 
 /** Categories are safe to show; detail goes only to the session file. */
 class Failure extends Error {
@@ -53,12 +65,14 @@ async function database() {
 				cwd TEXT NOT NULL,
 				model TEXT NOT NULL,
 				thinking_level TEXT,
+				cost REAL,
 				created_at TEXT NOT NULL,
 				note TEXT NOT NULL,
 				UNIQUE (session_id, context_hash)
 			)`);
-		if (!db.prepare("PRAGMA table_info(afterwords)").all().some((column) => column.name === "thinking_level")) {
-			db.exec("ALTER TABLE afterwords ADD COLUMN thinking_level TEXT");
+		const columns = new Set(db.prepare("PRAGMA table_info(afterwords)").all().map((column) => column.name));
+		for (const [name, type] of [["thinking_level", "TEXT"], ["cost", "REAL"]]) {
+			if (!columns.has(name)) db.exec(`ALTER TABLE afterwords ADD COLUMN ${name} ${type}`);
 		}
 		return db;
 	} catch (error) { db.close(); throw error; }
@@ -157,8 +171,8 @@ async function record(ctx: ExtensionContext, state: NonNullable<ReturnType<typeo
 		try {
 			db.exec("BEGIN IMMEDIATE"); // Never wait for locks during shutdown.
 			check();
-			const inserted = db.prepare("INSERT OR IGNORE INTO afterwords (session_id, context_hash, task_id, reason, cwd, model, thinking_level, created_at, note) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)")
-				.run(sessionId, hash, taskId ?? null, reason, cwd, `${author.provider ?? model.provider}/${author.responseModel ?? author.model ?? model.id}`, thinkingLevel, new Date().toISOString(), note);
+			const inserted = db.prepare("INSERT OR IGNORE INTO afterwords (session_id, context_hash, task_id, reason, cwd, model, thinking_level, cost, created_at, note) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
+				.run(sessionId, hash, taskId ?? null, reason, cwd, `${author.provider ?? model.provider}/${author.responseModel ?? author.model ?? model.id}`, thinkingLevel, totalCost(attempts), new Date().toISOString(), note);
 			check();
 			db.exec("COMMIT");
 			return inserted.changes ? note : undefined;
@@ -182,7 +196,7 @@ export default function (pi: ExtensionAPI): void {
 			try {
 				const db = await database();
 				try {
-					notes = db.prepare("SELECT id, note, created_at, cwd, reason, task_id, model, thinking_level FROM afterwords ORDER BY created_at DESC, id DESC").all();
+					notes = db.prepare("SELECT id, note, created_at, cwd, reason, task_id, model, thinking_level, cost FROM afterwords ORDER BY created_at DESC, id DESC").all();
 				} finally { db.close(); }
 			} catch {
 				ctx.ui.notify("Saved afterwords could not be read.", "error");
@@ -228,7 +242,7 @@ export default function (pi: ExtensionAPI): void {
 							for (const [i, row] of notes.entries()) {
 								starts.push(lines.length);
 								const active = i === selected;
-								const label = theme.fg(active ? "accent" : "muted", `#${row.id} · ${String(row.created_at).slice(0, 16).replace("T", " ")} · ${row.model} · thinking: ${row.thinking_level ?? "unknown"}`);
+								const label = theme.fg(active ? "accent" : "muted", `#${row.id} · ${String(row.created_at).slice(0, 16).replace("T", " ")} · ${row.model} · thinking: ${row.thinking_level ?? "unknown"} · cost: ${formatCost(row.cost)}`);
 								const text = new Text(`${label}\n${theme.fg(active ? "accent" : "text", String(row.note))}`, 0, 0);
 								for (const [j, line] of text.render(width - indent).entries()) {
 									const prefix = active && j === 0 && indent === 3 ? theme.fg("accent", " → ") : " ".repeat(indent);
@@ -273,7 +287,7 @@ export default function (pi: ExtensionAPI): void {
 				if (index === undefined) return;
 				const row = notes[index];
 				await ctx.ui.custom<void>((tui, _theme, keybindings, done) => {
-					const text = new Text(`${row.note}\n\n${row.created_at} · ${row.model} · thinking: ${row.thinking_level ?? "unknown"}\n${row.reason}${row.task_id === null ? "" : ` · task ${row.task_id}`}\n${row.cwd}`, 0, 0);
+					const text = new Text(`${row.note}\n\n${row.created_at} · ${row.model} · thinking: ${row.thinking_level ?? "unknown"} · cost: ${formatCost(row.cost)}\n${row.reason}${row.task_id === null ? "" : ` · task ${row.task_id}`}\n${row.cwd}`, 0, 0);
 					const scroll = new ScrollView(text, { scrollbar: "hidden" });
 					return {
 						capturesViewportInput: true,
@@ -364,7 +378,8 @@ export default function (pi: ExtensionAPI): void {
 			.then((note) => {
 				if (attempts.length) log(note ? "saved" : "duplicate");
 				if (!note) return;
-				const message = `Afterword saved:\n${note}`;
+				const cost = totalCost(attempts);
+				const message = `Afterword saved${cost === null ? "" : ` (cost ${formatCost(cost)})`}:\n${note}`;
 				if (shuttingDown === "new" || source?.reason === "new") {
 					const file = ctx.sessionManager.getSessionFile();
 					const notices = newSessionNotices.get(file) ?? [];

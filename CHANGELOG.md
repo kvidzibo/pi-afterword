@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.12.0
+
+- Save each note's cost estimate, including shortening requests, and show it when the note is saved and in `/pi-afterword`; older notes show `unknown`.
+
 ## 0.11.0
 
 - Ask the session's own model what it learned, as one more question on the session's request with its thinking level, so providers can reuse the prompt cache; the exchange is never added to the session. Done during a running agent turn is skipped, and a turn starting during generation interrupts it.
