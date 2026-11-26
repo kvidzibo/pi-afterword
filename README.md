@@ -63,9 +63,10 @@ extension replaces for each run is sent like Pi does once a run has been seen si
 the extension loaded or the last `/tree` navigation; before that, the recorded
 system messages are sent.
 
-A note over 30 words is never cut: a separate small request with minimal reasoning
-shortens it, up to two more times, sending only the rejected note. All requests share
-one 20-second deadline. Empty, incomplete or still-oversized responses are rejected.
+A note over 30 words is never cut: the same conversation continues with the note and
+a request to shorten it to at most 20 words, then 15 if it is still over 30. All
+requests share one 20-second deadline. Empty, incomplete or still-oversized responses
+are rejected.
 Identical conversation text in the same session is recorded once, including Done
 followed by `/new` or quit.
 

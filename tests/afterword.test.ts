@@ -324,7 +324,7 @@ test("afterwords survive Done and quit once, reject invalid output, and cannot s
 	};
 	let note = "Keep completion hooks outside Pinote's serial queue so callbacks can query task state without deadlocking the final database write operation. Keep the waitUntil registration synchronous to prevent task completion races.";
 	const usage = { input: 2, output: 40, cacheRead: 9000, cacheWrite: 30, totalTokens: 9072, cost: { input: 0, output: 0.0008, cacheRead: 0.0018, cacheWrite: 0.0002, total: 0.0028 } };
-	const result = () => ({ stopReason: "stop", content: [{ type: "text", text: note }], usage });
+	const result = () => ({ role: "assistant", stopReason: "stop", content: [{ type: "text", text: note }], usage });
 	let calls = 0;
 	const requests: any[][] = [];
 	let provider: () => Promise<any> = async () => result();
@@ -345,10 +345,12 @@ test("afterwords survive Done and quit once, reject invalid output, and cannot s
 			requests.push(context.messages);
 			assert.ok(options.signal instanceof AbortSignal);
 			signals.push(options.signal);
-			if (/^Shorten the lesson below to at most 25 words/.test(context.messages[0].content)) {
-				assert.equal(context.messages.length, 2);
-				assert.partialDeepStrictEqual(options, { reasoning: ctx.model.reasoning ? "minimal" : undefined, maxTokens: 1024, cacheRetention: "none" });
-				assert.notEqual(options.sessionId, session.getSessionId(), "Shortening never touches the session's provider state");
+			const { signal: _signal, ...rest } = options;
+			assert.deepEqual(rest, { reasoning: thinking === "off" ? undefined : thinking, thinkingBudgets: settings.thinkingBudgets,
+				sessionId: session.getSessionId(), disableContinuation: true, transport: "sse" }, "Session settings for cache reuse; no output cap or cache opt-out");
+			if (/^That lesson has \d+ words; the limit is 30\. Rewrite it in at most \d+ words/.test(context.messages.at(-1).content)) {
+				assert.deepEqual(context.messages.slice(0, -2), requests.at(-2), "Shortening continues the same conversation");
+				assert.equal(context.messages.at(-2).role, "assistant");
 				return { result: provider };
 			}
 			const history = convertToLlm(session.buildSessionProjection().messages);
@@ -360,9 +362,6 @@ test("afterwords survive Done and quit once, reject invalid output, and cannot s
 			assert.match(question.content, /Avoid PR status, test counts, completion summaries, and routine next steps/);
 			assert.match(question.content, /Aim for at most 25 words; never exceed 30 whitespace-separated words/);
 			assert.match(question.content, /do not call tools/);
-			const { signal: _signal, ...rest } = options;
-			assert.deepEqual(rest, { reasoning: thinking === "off" ? undefined : thinking, thinkingBudgets: settings.thinkingBudgets,
-				sessionId: session.getSessionId(), disableContinuation: true, transport: "sse" }, "Session settings for cache reuse; no output cap or cache opt-out");
 			return { result: provider };
 		} },
 		ui: { notify: (message: string) => notices.push(message) },
@@ -459,7 +458,8 @@ test("afterwords survive Done and quit once, reject invalid output, and cannot s
 		await done();
 		assert.equal(rows().length, 2, "Overlong text is rejected, not silently cut");
 		assert.deepEqual(notices.splice(0), ["Generating afterword…", "Afterword was not saved (note too long). Task completion will continue."]);
-		assert.deepEqual(requests.slice(-3).map((request) => request.at(-1).content === note), [false, true, true], "Two shortening retries, then give up");
+		assert.deepEqual(requests.slice(-3).map((request) => request.at(-1).content.match(/^That lesson has 31 words; the limit is 30\. Rewrite it in at most (\d+) words/)?.[1]),
+			[undefined, "20", "15"], "Two shortening retries asking for fewer words, then give up");
 		assert.partialDeepStrictEqual(logs.at(-1), { outcome: "failed", trigger: "done", taskId: 381, model: "test/afterword", failure: "note too long" });
 		assert.deepEqual(logs.at(-1).attempts.map((attempt: any) => [attempt.stopReason, attempt.words]), [["stop", 31], ["stop", 31], ["stop", 31]]);
 		assert.doesNotMatch(JSON.stringify(logs), /word word/, "Diagnostics never contain note text");
@@ -469,8 +469,7 @@ test("afterwords survive Done and quit once, reject invalid output, and cannot s
 		await done();
 		provider = async () => result();
 		assert.equal(rows().at(-1)!.note, short);
-		assert.equal(requests.at(-1)![1].content, Array(31).fill("word").join(" "), "The retry sends only the rejected note");
-		assert.match(requests.at(-1)![0].content, /untrusted reference material/);
+		assert.equal(requests.at(-1)!.at(-2).content[0].text, Array(31).fill("word").join(" "), "The model sees its own rejected note");
 		assert.partialDeepStrictEqual(logs.at(-1), { outcome: "saved", attempts: [{ words: 31, usage }, { words: 9, usage }] });
 		deleteLast();
 		append("blocked images");
