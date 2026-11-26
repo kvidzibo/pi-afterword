@@ -21,10 +21,11 @@ const afterword = await createJiti(import.meta.url, {
 const { SessionManager } = await import(pathToFileURL(join(dirname(piBin), "core/session-manager.js")).href);
 const { convertToLlm } = await import(pathToFileURL(join(dirname(piBin), "index.js")).href);
 const { getCurrentSystemPrompt } = await import("@earendil-works/pi-ai");
-const startRun = (handlers: Map<string, Function>, ctx: unknown, forceSystemPrompt?: string) => {
+const startRun = (handlers: Map<string, Function>, ctx: unknown, forceSystemPrompt?: string, started = true) => {
 	const systemPromptOptions: any = { sections: {} };
 	handlers.get("before_agent_start")!({ type: "before_agent_start", prompt: "", systemPromptOptions }, ctx);
 	if (forceSystemPrompt !== undefined) systemPromptOptions.forceSystemPrompt = forceSystemPrompt; // Pi sets it after all handlers.
+	if (started) handlers.get("agent_start")!({ type: "agent_start" }, ctx);
 };
 const themeModule = await import(pathToFileURL(join(dirname(piBin), "modes/interactive/theme/theme.js")).href);
 themeModule.initTheme("dark");
@@ -501,6 +502,13 @@ test("afterwords survive Done and quit once, reject invalid output, and cannot s
 			assert.doesNotMatch(JSON.stringify(replaced), /PROJECT-MARKER/, "Never sends recorded prompt sections Pi replaced");
 			deleteLast();
 		}
+		startRun(handlers, ctx, undefined, false);
+		append("after a run that failed to start");
+		replacedPrompt = true;
+		await done();
+		replacedPrompt = false;
+		assert.doesNotMatch(JSON.stringify(requests.at(-1)), /PROJECT-MARKER/, "Only a started run replaces the last run's prompt");
+		deleteLast();
 		handlers.get("session_tree")!({ type: "session_tree" }, ctx);
 		append("after tree navigation");
 		await done(); // The mock asserts the recorded history, system messages included.

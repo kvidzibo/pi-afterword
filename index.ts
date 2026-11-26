@@ -309,14 +309,19 @@ export default function (pi: ExtensionAPI): void {
 	let unsubscribe: (() => void) | undefined;
 	let lifetime = new AbortController();
 	const active = new Map<string, Promise<void>>();
+	// Pi forgets a per-run replacement prompt once the run settles. It sets forceSystemPrompt on
+	// these shared options after all before_agent_start handlers; a run may still fail to start.
+	type RunOptions = { forceSystemPrompt?: string } | undefined;
+	let pendingOptions: RunOptions;
+	let runOptions: RunOptions;
+	pi.on("before_agent_start", (event) => { pendingOptions = event.systemPromptOptions; });
+	pi.on("session_tree", () => { runOptions = undefined; }); // The run belonged to the branch just left.
 	// A real turn that starts during generation takes precedence over the afterword request.
 	const generating = new Set<AbortController>();
-	pi.on("agent_start", () => { for (const controller of generating) controller.abort(); });
-	// Pi forgets a per-run replacement prompt once the run settles. It sets forceSystemPrompt on
-	// these shared options after all before_agent_start handlers, so keep them for the last run.
-	let runOptions: { forceSystemPrompt?: string } | undefined;
-	pi.on("before_agent_start", (event) => { runOptions = event.systemPromptOptions; });
-	pi.on("session_tree", () => { runOptions = undefined; }); // The run belonged to the branch just left.
+	pi.on("agent_start", () => {
+		runOptions = pendingOptions;
+		for (const controller of generating) controller.abort();
+	});
 
 	// Async converts snapshot/setup exceptions into registered work, not bus errors.
 	const leaveAfterword = async (ctx: ExtensionContext, reason: Reason, taskId?: number, source?: AbortSignal): Promise<void> => {
@@ -406,7 +411,7 @@ export default function (pi: ExtensionAPI): void {
 		unsubscribe?.();
 		lifetime = new AbortController();
 		shuttingDown = undefined;
-		runOptions = undefined;
+		pendingOptions = runOptions = undefined;
 		if (ctx.mode !== "tui") return;
 		if (event.reason === "new") {
 			const notices = newSessionNotices.get(event.previousSessionFile);
