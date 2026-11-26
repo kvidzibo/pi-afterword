@@ -34,25 +34,31 @@ At interactive startup, `Afterwords: N` shows the saved-note count without addin
 model context. `/pi-afterword` opens a read-only list, newest first. Arrows select,
 Page Up/Down scroll, Enter shows details, and Escape returns or closes. Browsing
 makes no model requests and does not inject notes into the conversation. Each note's
-header shows its generating model and thinking level; older notes without a saved
-thinking level show `unknown`.
+header shows its generating model and the session's thinking level; older notes
+without a saved thinking level show `unknown`, and notes from before 0.11.0 show
+the level of their separate generation request.
 
 Generation requires **10 assistant turns on the active branch**, including
 tool-call responses and compacted turns. Eligible interactive quit (including
-handled SIGTERM/SIGHUP), `/new` (outgoing session), and successful Pinote Done request one lesson from the
-current model, aiming for 25 words and never saving more than 30, with minimal reasoning
-(adjusted to supported levels; off for non-reasoning models) and no tools. It
+handled SIGTERM/SIGHUP), `/new` (outgoing session), and successful Pinote Done ask
+the session's own model what it learned: Pi's next request for the session (same
+system prompt, tools, history, session ID and thinking level) plus one question.
+Providers can therefore reuse the session's prompt cache. The question and answer
+are never added to the session. The lesson aims for 25 words, never more than 30. It
 prefers verified causes/fixes, surprising constraints or failed approaches;
-otherwise it records an important decision and its rationale.
+otherwise it records an important decision and its rationale. Done during a running
+agent turn is skipped (`agent busy`): a request with the session's ID could disturb
+that turn.
 
 When a request starts, Pi shows `Generating afterword…`. After SQLite commits a new
 note, Pi prints `Afterword saved:` followed by the exact note. On `/new`, the
 confirmation appears in the new session; on quit it prints to the terminal.
 Skipped or already-saved conversations produce neither message.
 
-The request uses up to the last 64,000 conversation characters, less for small
-context windows; images, thinking and system instructions are omitted. A note over
-30 words is never cut: the model is asked to shorten it, up to two more times,
+The request carries the whole session context, including thinking and images
+(unless Pi blocks images); changes made by other extensions' `context` hooks are
+not applied, which can cost a cache miss. A note over 30 words is never cut: a
+separate small request with minimal reasoning shortens it, up to two more times,
 sending only the rejected note. All requests share one 20-second deadline. Empty,
 incomplete or still-oversized responses are rejected. Identical conversation text
 in the same session is recorded once, including Done followed by `/new` or quit.
@@ -68,7 +74,8 @@ Requests may incur provider charges outside Pi's main-turn usage totals.
 A failed save names its category, such as `note too long`, `timed out`,
 `model error` or `database error`. Each generation also appends a `pi-afterword`
 custom entry to the session file: outcome, trigger, task ID, model, total duration,
-per-request duration, stop reason and word count, plus the failure category and up
+per-request duration, stop reason, word count and token usage with Pi's cost
+estimate (including cache reads and writes), plus the failure category and up
 to 200 characters of the database error or of a provider error on the first
 request. Shortening requests carry the note, so their provider errors are logged by
 category only. Entries never contain note text and are not sent to the model.
@@ -88,7 +95,8 @@ The database is **local and unencrypted**. Notes and metadata (session ID,
 conversation hash, project directory, model, thinking level, timestamp, trigger
 and optional task ID) can contain sensitive project information despite the no-secrets instruction.
 Session-file diagnostics can contain provider or database error text.
-Generation sends conversation excerpts to your configured model provider.
+Generation sends the session's full context to its model provider again, as a
+normal turn would.
 
 ## Development
 
