@@ -2,7 +2,7 @@
 
 ## 0.11.0
 
-- Ask the session's own model what it learned, as one more question on the session's request with its thinking level, so providers can reuse the prompt cache; the exchange is never added to the session. Done during a running agent turn is skipped.
+- Ask the session's own model what it learned, as one more question on the session's request with its thinking level, so providers can reuse the prompt cache; the exchange is never added to the session. Done during a running agent turn is skipped, and a turn starting during generation interrupts it.
 - Save the session's thinking level with each note, and log each request's token usage and cost estimate.
 
 ## 0.10.0
