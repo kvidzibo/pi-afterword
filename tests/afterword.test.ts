@@ -20,6 +20,7 @@ const afterword = await createJiti(import.meta.url, {
 }).import(fileURLToPath(new URL("../index.ts", import.meta.url)), { default: true });
 const { SessionManager } = await import(pathToFileURL(join(dirname(piBin), "core/session-manager.js")).href);
 const { convertToLlm } = await import(pathToFileURL(join(dirname(piBin), "index.js")).href);
+const { getCurrentSystemPrompt } = await import("@earendil-works/pi-ai");
 const themeModule = await import(pathToFileURL(join(dirname(piBin), "modes/interactive/theme/theme.js")).href);
 themeModule.initTheme("dark");
 const { getKeybindings, visibleWidth } = await import(pathToFileURL(tuiPath).href);
@@ -327,9 +328,10 @@ test("afterwords survive Done and quit once, reject invalid output, and cannot s
 		session.appendMessage({ role: "assistant", content: [{ type: "text", text: `Verified ${text}` }], timestamp: Date.now(), stopReason: "stop" });
 	};
 	let idle = true;
+	let runPrompt = "";
 	const signals: AbortSignal[] = [];
 	const ctx = {
-		mode: "tui", hasUI: true, cwd: temp, sessionManager: session, isIdle: () => idle,
+		mode: "tui", hasUI: true, cwd: temp, sessionManager: session, isIdle: () => idle, getSystemPrompt: () => runPrompt,
 		model: { provider: "test", id: "afterword", contextWindow: 32768, reasoning: true },
 		modelRegistry: { streamSimple(model: unknown, context: any, options: any) {
 			calls++;
@@ -344,7 +346,7 @@ test("afterwords survive Done and quit once, reject invalid output, and cannot s
 				return { result: provider };
 			}
 			const history = convertToLlm(session.buildSessionProjection().messages);
-			assert.deepEqual(context.messages.slice(0, -1), settings.images?.blockImages ? context.messages.slice(0, -1) : history, "Repeats the session's own request");
+			if (!settings.images?.blockImages && runPrompt === getCurrentSystemPrompt(history)) assert.deepEqual(context.messages.slice(0, -1), history, "Repeats the session's own request");
 			const question = context.messages.at(-1);
 			assert.equal(question.role, "user");
 			assert.match(question.content, /durable, non-obvious lesson you learned in this conversation/);
@@ -477,6 +479,20 @@ test("afterwords survive Done and quit once, reject invalid output, and cannot s
 		assert.deepEqual(requests.at(-1)!.at(-2).content, [{ type: "text", text: "See" }, { type: "text", text: blocked }, { type: "text", text: "and" }, { type: "text", text: blocked }], "Pi's blocked-image placeholders");
 		assert.deepEqual(requests.at(-1)!.slice(0, -2), convertToLlm(session.buildSessionProjection().messages).slice(0, -1));
 		deleteLast();
+		append("run with a replaced prompt");
+		const tool = { name: "bash", description: "Run a command", parameters: { type: "object", properties: {} } };
+		session.appendMessage({ role: "system", content: "", sections: { project: "PROJECT-MARKER" }, toolsAdded: [tool], timestamp: Date.now() });
+		append("after the system message");
+		runPrompt = "Prompt replaced for this run";
+		handlers.get("agent_end")!({ type: "agent_end", messages: [] }, ctx);
+		await done();
+		const replaced = requests.at(-1)!;
+		assert.partialDeepStrictEqual(replaced[0], { role: "system", content: runPrompt, toolsAdded: [tool] }, "Pi's per-run prompt projection");
+		assert.deepEqual(replaced.slice(1, -1), convertToLlm(session.buildSessionProjection().messages).filter((message: any) => message.role !== "system"));
+		assert.doesNotMatch(JSON.stringify(replaced), /PROJECT-MARKER/, "Never sends the recorded prompt Pi replaced");
+		deleteLast();
+		runPrompt = getCurrentSystemPrompt(convertToLlm(session.buildSessionProjection().messages));
+		handlers.get("agent_end")!({ type: "agent_end", messages: [] }, ctx);
 		append("agent still running");
 		idle = false;
 		const beforeBusy = calls;
@@ -579,7 +595,7 @@ test("afterwords survive Done and quit once, reject invalid output, and cannot s
 		assert.equal(rows().length, 2, "An uncooperative provider cannot write after timeout");
 		const keep = session.appendMessage({ role: "user", content: "Continue after compaction", timestamp: Date.now() });
 		session.appendCompaction("Verified queue isolation; remaining checks pending.", keep, 1000);
-		assert.deepEqual(session.buildSessionProjection().messages.map((message: any) => message.role), ["compactionSummary", "user"]);
+		assert.deepEqual(session.buildSessionProjection().messages.map((message: any) => message.role), ["system", "compactionSummary", "user"], "Compaction keeps the prompt checkpoint");
 		note = "Queue isolation was verified before compaction; finish the remaining checks.";
 		thinking = "medium";
 		provider = async () => ({ ...result(), provider: "physical", model: "routed-alias", responseModel: "resolved-model", thinkingLevel: "low" });

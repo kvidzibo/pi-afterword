@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { chmodSync, closeSync, mkdirSync, openSync, statSync, writeSync } from "node:fs";
 import { join } from "node:path";
-import { clampThinkingLevel, type Message, type SimpleStreamOptions } from "@earendil-works/pi-ai";
+import { clampThinkingLevel, getCurrentSystemMessage, getCurrentSystemPrompt, type Message, type SimpleStreamOptions } from "@earendil-works/pi-ai";
 import { convertToLlm, DynamicBorder, ExtensionSelectorComponent, getAgentDir, keyHint, rawKeyHint, serializeConversation, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Container, ScrollView, Spacer, Text } from "@earendil-works/pi-tui";
 
@@ -75,17 +75,23 @@ function withoutImages(messages: Message[]): Message[] {
 }
 
 /** No full transcript is persisted; state-only Pinote entries do not affect the key. */
-function snapshot(pi: ExtensionAPI, ctx: ExtensionContext) {
+function snapshot(pi: ExtensionAPI, ctx: ExtensionContext, runPrompt: string | undefined) {
 	// Raw active-branch history survives compaction, resume, and extension reloads.
 	const turns = ctx.sessionManager.getBranch().filter((entry) => entry.type === "message" && entry.message.role === "assistant").length;
 	if (turns < MIN_AGENT_TURNS) return;
 	const messages = ctx.sessionManager.buildSessionProjection().messages;
 	if (!messages.some((message) => message.role === "compactionSummary" || message.role === "branchSummary" ||
 		message.role === "assistant" && message.content.some((block) => block.type === "text" || block.type === "toolCall"))) return;
-	const history = convertToLlm(messages);
+	let history = convertToLlm(messages);
 	const conversation = serializeConversation(history);
 	if (!conversation.trim()) return;
 	const hash = createHash("sha256").update(conversation).digest("hex");
+	// Like Pi, send a prompt an extension replaced for the last run instead of the recorded one.
+	if (runPrompt !== undefined && runPrompt !== getCurrentSystemPrompt(history)) {
+		const current = getCurrentSystemMessage(history);
+		history = [{ role: "system", content: runPrompt, ...(current?.toolsAdded ? { toolsAdded: current.toolsAdded } : {}), timestamp: current?.timestamp ?? Date.now() },
+			...history.filter((message) => message.role !== "system")];
+	}
 	const settings = pi.getSettings();
 	return {
 		history: settings.images?.blockImages ? withoutImages(history) : history, hash, sessionId: ctx.sessionManager.getSessionId(), cwd: ctx.cwd,
@@ -306,11 +312,14 @@ export default function (pi: ExtensionAPI): void {
 	// A real turn that starts during generation takes precedence over the afterword request.
 	const generating = new Set<AbortController>();
 	pi.on("agent_start", () => { for (const controller of generating) controller.abort(); });
+	// Pi forgets a per-run replacement prompt once the run settles; agent_end still reports it.
+	let runPrompt: string | undefined;
+	pi.on("agent_end", (_event, ctx) => { runPrompt = ctx.getSystemPrompt(); });
 
 	// Async converts snapshot/setup exceptions into registered work, not bus errors.
 	const leaveAfterword = async (ctx: ExtensionContext, reason: Reason, taskId?: number, source?: AbortSignal): Promise<void> => {
 		const deadline = performance.now() + DEADLINE_MS;
-		const state = snapshot(pi, ctx);
+		const state = snapshot(pi, ctx, runPrompt);
 		if (!state) return Promise.resolve();
 		// Done followed by quit or /new shares in-flight work; SQLite deduplicates saved history.
 		const key = `${state.sessionId}:${state.hash}`;
@@ -395,6 +404,7 @@ export default function (pi: ExtensionAPI): void {
 		unsubscribe?.();
 		lifetime = new AbortController();
 		shuttingDown = undefined;
+		runPrompt = undefined;
 		if (ctx.mode !== "tui") return;
 		if (event.reason === "new") {
 			const notices = newSessionNotices.get(event.previousSessionFile);

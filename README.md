@@ -57,9 +57,11 @@ Skipped or already-saved conversations produce neither message.
 
 The request carries the whole session context, including thinking and images
 (unless Pi blocks images). Request-time changes Pi makes for other extensions are
-not applied: `context` and provider-payload hooks (including any redaction), hidden
-tool declarations, or a system prompt replaced for each run. They can also cost a
-cache miss. A note over 30 words is never cut: a
+not applied: `context` and provider-payload hooks (including any redaction) and
+hidden tool declarations; they can also cost a cache miss. A system prompt an
+extension replaces for each run is sent like Pi does once a run has been seen since
+the extension loaded; before that, the recorded prompt is sent. A note over 30
+words is never cut: a
 separate small request with minimal reasoning shortens it, up to two more times,
 sending only the rejected note. All requests share one 20-second deadline. Empty,
 incomplete or still-oversized responses are rejected. Identical conversation text
