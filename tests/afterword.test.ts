@@ -485,6 +485,23 @@ test("afterwords survive Done and quit once, reject invalid output, and cannot s
 		assert.equal(calls, beforeBusy, "Never sends a session request during a running turn");
 		assert.deepEqual(notices.splice(0).at(-1), "Afterword was not saved (agent busy). Task completion will continue.");
 		assert.partialDeepStrictEqual(logs.at(-1), { outcome: "failed", failure: "agent busy", attempts: [] });
+		const becomingBusy = done(); // A turn starts while the duplicate check is pending.
+		idle = false;
+		await becomingBusy;
+		idle = true;
+		assert.equal(calls, beforeBusy, "Idle is rechecked when the request would be sent");
+		assert.equal(logs.at(-1).failure, "agent busy");
+		let finishTurn!: (value: any) => void;
+		provider = () => new Promise((resolve) => { finishTurn = resolve; });
+		const overtaken = done();
+		for (let i = 0; i < 100 && !finishTurn; i++) await nextTick();
+		handlers.get("agent_start")!({ type: "agent_start" }, ctx);
+		assert.equal(signals.at(-1)!.aborted, true, "A real turn ends the afterword request");
+		finishTurn(result());
+		await overtaken;
+		provider = async () => result();
+		assert.equal(logs.at(-1).failure, "interrupted");
+		notices.splice(0);
 		append("tool call instead of a note");
 		provider = async () => ({ stopReason: "toolUse", content: [{ type: "toolCall", id: "call", name: "bash", arguments: {} }], usage });
 		await done();

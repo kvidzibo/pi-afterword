@@ -47,8 +47,8 @@ Providers can therefore reuse the session's prompt cache. The question and answe
 are never added to the session. The lesson aims for 25 words, never more than 30. It
 prefers verified causes/fixes, surprising constraints or failed approaches;
 otherwise it records an important decision and its rationale. Done during a running
-agent turn is skipped (`agent busy`): a request with the session's ID could disturb
-that turn.
+agent turn is skipped (`agent busy`), and a turn that starts during generation
+interrupts it: a request with the session's ID could disturb that turn.
 
 When a request starts, Pi shows `Generating afterword…`. After SQLite commits a new
 note, Pi prints `Afterword saved:` followed by the exact note. On `/new`, the
@@ -56,8 +56,9 @@ confirmation appears in the new session; on quit it prints to the terminal.
 Skipped or already-saved conversations produce neither message.
 
 The request carries the whole session context, including thinking and images
-(unless Pi blocks images). Other extensions' `context` and provider-payload hooks
-are not applied, including any redaction they make; their changes can also cost a
+(unless Pi blocks images). Request-time changes Pi makes for other extensions are
+not applied: `context` and provider-payload hooks (including any redaction), hidden
+tool declarations, or a system prompt replaced for each run. They can also cost a
 cache miss. A note over 30 words is never cut: a
 separate small request with minimal reasoning shortens it, up to two more times,
 sending only the rejected note. All requests share one 20-second deadline. Empty,

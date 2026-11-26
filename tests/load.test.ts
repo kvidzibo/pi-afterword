@@ -25,5 +25,5 @@ test("manifest factory-loads through Pi without tools or model requests", async 
 	const extension = result.extensions[0];
 	assert.deepEqual([...extension.commands.keys()], ["pi-afterword"]);
 	assert.equal(extension.tools.size, 0);
-	assert.deepEqual([...extension.handlers.keys()].sort(), ["session_shutdown", "session_start"]);
+	assert.deepEqual([...extension.handlers.keys()].sort(), ["agent_start", "session_shutdown", "session_start"]);
 });

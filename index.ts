@@ -111,7 +111,8 @@ async function record(ctx: ExtensionContext, state: NonNullable<ReturnType<typeo
 		finally { db.close(); }
 	})) return;
 	// A request with the session's ID can replace a running turn's request (Claude Code bridge).
-	if (busy) throw new Failure("agent busy");
+	// Checked again here: nothing awaits between this and sending the request.
+	if (busy || !ctx.isIdle()) throw new Failure("agent busy");
 	check();
 	onGenerating();
 	// Repeat the session's own request plus one question, so providers can reuse its prompt cache.
@@ -302,6 +303,9 @@ export default function (pi: ExtensionAPI): void {
 	let unsubscribe: (() => void) | undefined;
 	let lifetime = new AbortController();
 	const active = new Map<string, Promise<void>>();
+	// A real turn that starts during generation takes precedence over the afterword request.
+	const generating = new Set<AbortController>();
+	pi.on("agent_start", () => { for (const controller of generating) controller.abort(); });
 
 	// Async converts snapshot/setup exceptions into registered work, not bus errors.
 	const leaveAfterword = async (ctx: ExtensionContext, reason: Reason, taskId?: number, source?: AbortSignal): Promise<void> => {
@@ -315,6 +319,7 @@ export default function (pi: ExtensionAPI): void {
 		const signal = AbortSignal.any([controller.signal, lifetime.signal]);
 		// Pinote can tear down first on quit or /new; our own awaited shutdown hook finishes this work.
 		const onSourceAbort = () => { if (!isShutdownTrigger(source?.reason)) controller.abort(); };
+		generating.add(controller);
 		source?.addEventListener("abort", onSourceAbort, { once: true });
 		if (source?.aborted) onSourceAbort();
 		let timer: ReturnType<typeof setTimeout>;
@@ -379,6 +384,7 @@ export default function (pi: ExtensionAPI): void {
 				// Rejected responses (e.g. a tool call) can leave a provider request open: end it.
 				controller.abort();
 				source?.removeEventListener("abort", onSourceAbort);
+				generating.delete(controller);
 				active.delete(key);
 			});
 		active.set(key, work);
