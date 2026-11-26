@@ -21,6 +21,11 @@ const afterword = await createJiti(import.meta.url, {
 const { SessionManager } = await import(pathToFileURL(join(dirname(piBin), "core/session-manager.js")).href);
 const { convertToLlm } = await import(pathToFileURL(join(dirname(piBin), "index.js")).href);
 const { getCurrentSystemPrompt } = await import("@earendil-works/pi-ai");
+const startRun = (handlers: Map<string, Function>, ctx: unknown, forceSystemPrompt?: string) => {
+	const systemPromptOptions: any = { sections: {} };
+	handlers.get("before_agent_start")!({ type: "before_agent_start", prompt: "", systemPromptOptions }, ctx);
+	if (forceSystemPrompt !== undefined) systemPromptOptions.forceSystemPrompt = forceSystemPrompt; // Pi sets it after all handlers.
+};
 const themeModule = await import(pathToFileURL(join(dirname(piBin), "modes/interactive/theme/theme.js")).href);
 themeModule.initTheme("dark");
 const { getKeybindings, visibleWidth } = await import(pathToFileURL(tuiPath).href);
@@ -328,10 +333,10 @@ test("afterwords survive Done and quit once, reject invalid output, and cannot s
 		session.appendMessage({ role: "assistant", content: [{ type: "text", text: `Verified ${text}` }], timestamp: Date.now(), stopReason: "stop" });
 	};
 	let idle = true;
-	let runPrompt = "";
+	let replacedPrompt = false;
 	const signals: AbortSignal[] = [];
 	const ctx = {
-		mode: "tui", hasUI: true, cwd: temp, sessionManager: session, isIdle: () => idle, getSystemPrompt: () => runPrompt,
+		mode: "tui", hasUI: true, cwd: temp, sessionManager: session, isIdle: () => idle,
 		model: { provider: "test", id: "afterword", contextWindow: 32768, reasoning: true },
 		modelRegistry: { streamSimple(model: unknown, context: any, options: any) {
 			calls++;
@@ -346,7 +351,7 @@ test("afterwords survive Done and quit once, reject invalid output, and cannot s
 				return { result: provider };
 			}
 			const history = convertToLlm(session.buildSessionProjection().messages);
-			if (!settings.images?.blockImages && runPrompt === getCurrentSystemPrompt(history)) assert.deepEqual(context.messages.slice(0, -1), history, "Repeats the session's own request");
+			if (!settings.images?.blockImages && !replacedPrompt) assert.deepEqual(context.messages.slice(0, -1), history, "Repeats the session's own request");
 			const question = context.messages.at(-1);
 			assert.equal(question.role, "user");
 			assert.match(question.content, /durable, non-obvious lesson you learned in this conversation/);
@@ -482,22 +487,29 @@ test("afterwords survive Done and quit once, reject invalid output, and cannot s
 		append("run with a replaced prompt");
 		const tool = { name: "bash", description: "Run a command", parameters: { type: "object", properties: {} } };
 		session.appendMessage({ role: "system", content: "", sections: { project: "PROJECT-MARKER" }, toolsAdded: [tool], timestamp: Date.now() });
-		append("after the system message");
-		runPrompt = "Prompt replaced for this run";
-		handlers.get("agent_end")!({ type: "agent_end", messages: [] }, ctx);
-		await done();
-		const replaced = requests.at(-1)!;
-		assert.partialDeepStrictEqual(replaced[0], { role: "system", content: runPrompt, toolsAdded: [tool] }, "Pi's per-run prompt projection");
-		assert.deepEqual(replaced.slice(1, -1), convertToLlm(session.buildSessionProjection().messages).filter((message: any) => message.role !== "system"));
-		assert.doesNotMatch(JSON.stringify(replaced), /PROJECT-MARKER/, "Never sends the recorded prompt Pi replaced");
-		deleteLast();
+		session.appendMessage({ role: "system", content: "", sections: { project: null }, timestamp: Date.now() });
+		append("after the system messages");
+		const recordedPrompt = getCurrentSystemPrompt(convertToLlm(session.buildSessionProjection().messages));
+		for (const forced of ["Prompt replaced for this run", recordedPrompt]) {
+			startRun(handlers, ctx, forced);
+			replacedPrompt = true;
+			await done();
+			replacedPrompt = false;
+			const replaced = requests.at(-1)!;
+			assert.partialDeepStrictEqual(replaced[0], { role: "system", content: forced, toolsAdded: [tool] }, "Pi's per-run prompt projection, even for identical text");
+			assert.deepEqual(replaced.slice(1, -1), convertToLlm(session.buildSessionProjection().messages).filter((message: any) => message.role !== "system"));
+			assert.doesNotMatch(JSON.stringify(replaced), /PROJECT-MARKER/, "Never sends recorded prompt sections Pi replaced");
+			deleteLast();
+		}
 		handlers.get("session_tree")!({ type: "session_tree" }, ctx);
 		append("after tree navigation");
-		await done();
-		assert.deepEqual(requests.at(-1)!.slice(0, -1), convertToLlm(session.buildSessionProjection().messages), "A run's prompt is not reused after leaving its branch");
+		await done(); // The mock asserts the recorded history, system messages included.
 		deleteLast();
-		runPrompt = getCurrentSystemPrompt(convertToLlm(session.buildSessionProjection().messages));
-		handlers.get("agent_end")!({ type: "agent_end", messages: [] }, ctx);
+		startRun(handlers, ctx);
+		append("after an unforced run");
+		await done();
+		assert.match(JSON.stringify(requests.at(-1)), /PROJECT-MARKER/, "Unforced runs keep Pi's recorded system messages");
+		deleteLast();
 		append("agent still running");
 		idle = false;
 		const beforeBusy = calls;

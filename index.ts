@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { chmodSync, closeSync, mkdirSync, openSync, statSync, writeSync } from "node:fs";
 import { join } from "node:path";
-import { clampThinkingLevel, getCurrentSystemMessage, getCurrentSystemPrompt, type Message, type SimpleStreamOptions } from "@earendil-works/pi-ai";
+import { clampThinkingLevel, getCurrentSystemMessage, type Message, type SimpleStreamOptions } from "@earendil-works/pi-ai";
 import { convertToLlm, DynamicBorder, ExtensionSelectorComponent, getAgentDir, keyHint, rawKeyHint, serializeConversation, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Container, ScrollView, Spacer, Text } from "@earendil-works/pi-tui";
 
@@ -75,7 +75,7 @@ function withoutImages(messages: Message[]): Message[] {
 }
 
 /** No full transcript is persisted; state-only Pinote entries do not affect the key. */
-function snapshot(pi: ExtensionAPI, ctx: ExtensionContext, runPrompt: string | undefined) {
+function snapshot(pi: ExtensionAPI, ctx: ExtensionContext, forcedPrompt: string | undefined) {
 	// Raw active-branch history survives compaction, resume, and extension reloads.
 	const turns = ctx.sessionManager.getBranch().filter((entry) => entry.type === "message" && entry.message.role === "assistant").length;
 	if (turns < MIN_AGENT_TURNS) return;
@@ -86,10 +86,10 @@ function snapshot(pi: ExtensionAPI, ctx: ExtensionContext, runPrompt: string | u
 	const conversation = serializeConversation(history);
 	if (!conversation.trim()) return;
 	const hash = createHash("sha256").update(conversation).digest("hex");
-	// Like Pi, send a prompt an extension replaced for the last run instead of the recorded one.
-	if (runPrompt !== undefined && runPrompt !== getCurrentSystemPrompt(history)) {
+	// Like Pi, send a prompt an extension replaced for the last run instead of the recorded ones.
+	if (forcedPrompt !== undefined) {
 		const current = getCurrentSystemMessage(history);
-		history = [{ role: "system", content: runPrompt, ...(current?.toolsAdded ? { toolsAdded: current.toolsAdded } : {}), timestamp: current?.timestamp ?? Date.now() },
+		history = [{ role: "system", content: forcedPrompt, ...(current?.toolsAdded ? { toolsAdded: current.toolsAdded } : {}), timestamp: current?.timestamp ?? Date.now() },
 			...history.filter((message) => message.role !== "system")];
 	}
 	const settings = pi.getSettings();
@@ -312,15 +312,16 @@ export default function (pi: ExtensionAPI): void {
 	// A real turn that starts during generation takes precedence over the afterword request.
 	const generating = new Set<AbortController>();
 	pi.on("agent_start", () => { for (const controller of generating) controller.abort(); });
-	// Pi forgets a per-run replacement prompt once the run settles; agent_end still reports it.
-	let runPrompt: string | undefined;
-	pi.on("agent_end", (_event, ctx) => { runPrompt = ctx.getSystemPrompt(); });
-	pi.on("session_tree", () => { runPrompt = undefined; }); // The run belonged to the branch just left.
+	// Pi forgets a per-run replacement prompt once the run settles. It sets forceSystemPrompt on
+	// these shared options after all before_agent_start handlers, so keep them for the last run.
+	let runOptions: { forceSystemPrompt?: string } | undefined;
+	pi.on("before_agent_start", (event) => { runOptions = event.systemPromptOptions; });
+	pi.on("session_tree", () => { runOptions = undefined; }); // The run belonged to the branch just left.
 
 	// Async converts snapshot/setup exceptions into registered work, not bus errors.
 	const leaveAfterword = async (ctx: ExtensionContext, reason: Reason, taskId?: number, source?: AbortSignal): Promise<void> => {
 		const deadline = performance.now() + DEADLINE_MS;
-		const state = snapshot(pi, ctx, runPrompt);
+		const state = snapshot(pi, ctx, runOptions?.forceSystemPrompt);
 		if (!state) return Promise.resolve();
 		// Done followed by quit or /new shares in-flight work; SQLite deduplicates saved history.
 		const key = `${state.sessionId}:${state.hash}`;
@@ -405,7 +406,7 @@ export default function (pi: ExtensionAPI): void {
 		unsubscribe?.();
 		lifetime = new AbortController();
 		shuttingDown = undefined;
-		runPrompt = undefined;
+		runOptions = undefined;
 		if (ctx.mode !== "tui") return;
 		if (event.reason === "new") {
 			const notices = newSessionNotices.get(event.previousSessionFile);

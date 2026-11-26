@@ -60,8 +60,8 @@ The request carries the whole session context, including thinking and images
 not applied: `context` and provider-payload hooks (including any redaction) and
 hidden tool declarations; they can also cost a cache miss. A system prompt an
 extension replaces for each run is sent like Pi does once a run has been seen since
-the extension loaded or the last `/tree` navigation; before that, and when the
-replacement equals the recorded prompt text, the recorded system messages are sent.
+the extension loaded or the last `/tree` navigation; before that, the recorded
+system messages are sent.
 
 A note over 30 words is never cut: a separate small request with minimal reasoning
 shortens it, up to two more times, sending only the rejected note. All requests share
