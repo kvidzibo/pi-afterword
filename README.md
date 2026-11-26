@@ -34,9 +34,10 @@ At interactive startup, `Afterwords: N` shows the saved-note count without addin
 model context. `/pi-afterword` opens a read-only list, newest first. Arrows select,
 Page Up/Down scroll, Enter shows details, and Escape returns or closes. Browsing
 makes no model requests and does not inject notes into the conversation. Each note's
-header shows its generating model and the session's thinking level; older notes
-without a saved thinking level show `unknown`, and notes from before 0.11.0 show
-the level of their separate generation request.
+header shows its generating model, the session's thinking level and Pi's cost
+estimate for all requests behind the note. Older notes without a saved thinking
+level or cost show `unknown`; notes from before 0.11.0 show the level of their
+separate generation request.
 
 Generation requires **10 assistant turns on the active branch**, including
 tool-call responses and compacted turns. Eligible interactive quit (including
@@ -51,7 +52,7 @@ agent turn is skipped (`agent busy`), and a turn that starts during generation
 interrupts it: a request with the session's ID could disturb that turn.
 
 When a request starts, Pi shows `Generating afterword…`. After SQLite commits a new
-note, Pi prints `Afterword saved:` followed by the exact note. On `/new`, the
+note, Pi prints `Afterword saved (cost $…):` followed by the exact note. On `/new`, the
 confirmation appears in the new session; on quit it prints to the terminal.
 Skipped or already-saved conversations produce neither message.
 
@@ -99,7 +100,7 @@ service or runtime dependency is required. The directory and database use
 owner-only permissions. Stop Pi sessions before backing up or moving the database.
 
 The database is **local and unencrypted**. Notes and metadata (session ID,
-conversation hash, project directory, model, thinking level, timestamp, trigger
+conversation hash, project directory, model, thinking level, cost estimate, timestamp, trigger
 and optional task ID) can contain sensitive project information despite the no-secrets instruction.
 Session-file diagnostics can contain provider or database error text.
 Generation sends the session's full context to its model provider again, as a

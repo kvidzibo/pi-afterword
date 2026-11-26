@@ -1,6 +1,6 @@
 {
   "name": "@kvidzibo/pi-afterword",
-  "version": "0.11.0",
+  "version": "0.12.0",
   "description": "Save durable conversation lessons on /new, quit, or Pinote Done, and browse them with /pi-afterword.",
   "type": "module",
   "license": "MIT",
