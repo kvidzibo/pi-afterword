@@ -378,8 +378,7 @@ export default function (pi: ExtensionAPI): void {
 			.then((note) => {
 				if (attempts.length) log(note ? "saved" : "duplicate");
 				if (!note) return;
-				const cost = totalCost(attempts);
-				const message = `Afterword saved${cost === null ? "" : ` (cost ${formatCost(cost)})`}:\n${note}`;
+				const message = `Afterword saved (cost ${formatCost(totalCost(attempts))}):\n${note}`;
 				if (shuttingDown === "new" || source?.reason === "new") {
 					const file = ctx.sessionManager.getSessionFile();
 					const notices = newSessionNotices.get(file) ?? [];
