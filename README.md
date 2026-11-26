@@ -56,8 +56,9 @@ confirmation appears in the new session; on quit it prints to the terminal.
 Skipped or already-saved conversations produce neither message.
 
 The request carries the whole session context, including thinking and images
-(unless Pi blocks images); changes made by other extensions' `context` hooks are
-not applied, which can cost a cache miss. A note over 30 words is never cut: a
+(unless Pi blocks images). Other extensions' `context` and provider-payload hooks
+are not applied, including any redaction they make; their changes can also cost a
+cache miss. A note over 30 words is never cut: a
 separate small request with minimal reasoning shortens it, up to two more times,
 sending only the rejected note. All requests share one 20-second deadline. Empty,
 incomplete or still-oversized responses are rejected. Identical conversation text

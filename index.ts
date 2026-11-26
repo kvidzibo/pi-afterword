@@ -115,9 +115,10 @@ async function record(ctx: ExtensionContext, state: NonNullable<ReturnType<typeo
 	check();
 	onGenerating();
 	// Repeat the session's own request plus one question, so providers can reuse its prompt cache.
-	// The request never enters the session; continuation state stays with the real conversation.
+	// The request never enters the session. Continuation state and Codex's per-session WebSocket
+	// (SSE still sends the session's cache key) stay with the real conversation.
 	let messages: Message[] = [...history, { role: "user", content: INSTRUCTION, timestamp: Date.now() }];
-	let options: SimpleStreamOptions = { reasoning: thinkingLevel === "off" ? undefined : thinkingLevel, thinkingBudgets, sessionId, disableContinuation: true };
+	let options: SimpleStreamOptions = { reasoning: thinkingLevel === "off" ? undefined : thinkingLevel, thinkingBudgets, sessionId, disableContinuation: true, transport: "sse" };
 	let result, author, note: string;
 	while (true) {
 		check(); // Never start a request whose result could not be saved.
@@ -157,7 +158,7 @@ async function record(ctx: ExtensionContext, state: NonNullable<ReturnType<typeo
 			db.exec("BEGIN IMMEDIATE"); // Never wait for locks during shutdown.
 			check();
 			const inserted = db.prepare("INSERT OR IGNORE INTO afterwords (session_id, context_hash, task_id, reason, cwd, model, thinking_level, created_at, note) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)")
-				.run(sessionId, hash, taskId ?? null, reason, cwd, `${author.provider ?? model.provider}/${author.responseModel ?? author.model ?? model.id}`, author.thinkingLevel ?? thinkingLevel, new Date().toISOString(), note);
+				.run(sessionId, hash, taskId ?? null, reason, cwd, `${author.provider ?? model.provider}/${author.responseModel ?? author.model ?? model.id}`, thinkingLevel, new Date().toISOString(), note);
 			check();
 			db.exec("COMMIT");
 			return inserted.changes ? note : undefined;
@@ -375,6 +376,8 @@ export default function (pi: ExtensionAPI): void {
 			.finally(() => {
 				clearTimeout(timer);
 				signal.removeEventListener("abort", onAbort);
+				// Rejected responses (e.g. a tool call) can leave a provider request open: end it.
+				controller.abort();
 				source?.removeEventListener("abort", onSourceAbort);
 				active.delete(key);
 			});

@@ -327,6 +327,7 @@ test("afterwords survive Done and quit once, reject invalid output, and cannot s
 		session.appendMessage({ role: "assistant", content: [{ type: "text", text: `Verified ${text}` }], timestamp: Date.now(), stopReason: "stop" });
 	};
 	let idle = true;
+	const signals: AbortSignal[] = [];
 	const ctx = {
 		mode: "tui", hasUI: true, cwd: temp, sessionManager: session, isIdle: () => idle,
 		model: { provider: "test", id: "afterword", contextWindow: 32768, reasoning: true },
@@ -335,6 +336,7 @@ test("afterwords survive Done and quit once, reject invalid output, and cannot s
 			assert.equal(model, ctx.model);
 			requests.push(context.messages);
 			assert.ok(options.signal instanceof AbortSignal);
+			signals.push(options.signal);
 			if (/^Shorten the lesson below to at most 25 words/.test(context.messages[0].content)) {
 				assert.equal(context.messages.length, 2);
 				assert.partialDeepStrictEqual(options, { reasoning: ctx.model.reasoning ? "minimal" : undefined, maxTokens: 1024, cacheRetention: "none" });
@@ -352,7 +354,7 @@ test("afterwords survive Done and quit once, reject invalid output, and cannot s
 			assert.match(question.content, /do not call tools/);
 			const { signal: _signal, ...rest } = options;
 			assert.deepEqual(rest, { reasoning: thinking === "off" ? undefined : thinking, thinkingBudgets: settings.thinkingBudgets,
-				sessionId: session.getSessionId(), disableContinuation: true }, "Session settings for cache reuse; no output cap or cache opt-out");
+				sessionId: session.getSessionId(), disableContinuation: true, transport: "sse" }, "Session settings for cache reuse; no output cap or cache opt-out");
 			return { result: provider };
 		} },
 		ui: { notify: (message: string) => notices.push(message) },
@@ -483,6 +485,12 @@ test("afterwords survive Done and quit once, reject invalid output, and cannot s
 		assert.equal(calls, beforeBusy, "Never sends a session request during a running turn");
 		assert.deepEqual(notices.splice(0).at(-1), "Afterword was not saved (agent busy). Task completion will continue.");
 		assert.partialDeepStrictEqual(logs.at(-1), { outcome: "failed", failure: "agent busy", attempts: [] });
+		append("tool call instead of a note");
+		provider = async () => ({ stopReason: "toolUse", content: [{ type: "toolCall", id: "call", name: "bash", arguments: {} }], usage });
+		await done();
+		provider = async () => result();
+		assert.partialDeepStrictEqual(logs.at(-1), { outcome: "failed", failure: "incomplete response", attempts: [{ stopReason: "toolUse" }] });
+		assert.equal(signals.at(-1)!.aborted, true, "A rejected response's provider request is ended");
 		append("reply over both limits");
 		replies.push(Array(350).fill("sixsix").join(" "), short);
 		provider = async () => { note = replies.shift()!; return result(); };
@@ -561,7 +569,7 @@ test("afterwords survive Done and quit once, reject invalid output, and cannot s
 		await handlers.get("session_shutdown")!({ reason: "quit" }, ctx);
 		assert.equal(rows().length, 3, "Compacted-away assistant messages still support an afterword");
 		assert.equal(rows()[2].model, "physical/resolved-model", "Prefer the provider-reported generating model over the routed alias");
-		assert.equal(rows()[2].thinking_level, "low");
+		assert.equal(rows()[2].thinking_level, "medium", "The session's level, not one reported by the provider");
 		assert.deepEqual(terminal, ["Generating afterword…", `Afterword saved:\n${rows()[2].note}`]);
 		await handlers.get("session_start")!({ reason: "reload" }, ctx);
 		await handlers.get("session_shutdown")!({ reason: "reload" }, ctx);
