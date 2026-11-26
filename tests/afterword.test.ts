@@ -19,6 +19,14 @@ const afterword = await createJiti(import.meta.url, {
 	}, tryNative: false,
 }).import(fileURLToPath(new URL("../index.ts", import.meta.url)), { default: true });
 const { SessionManager } = await import(pathToFileURL(join(dirname(piBin), "core/session-manager.js")).href);
+const { convertToLlm } = await import(pathToFileURL(join(dirname(piBin), "index.js")).href);
+const { getCurrentSystemPrompt } = await import("@earendil-works/pi-ai");
+const startRun = (handlers: Map<string, Function>, ctx: unknown, forceSystemPrompt?: string, started = true) => {
+	const systemPromptOptions: any = { sections: {} };
+	handlers.get("before_agent_start")!({ type: "before_agent_start", prompt: "", systemPromptOptions }, ctx);
+	if (forceSystemPrompt !== undefined) systemPromptOptions.forceSystemPrompt = forceSystemPrompt; // Pi sets it after all handlers.
+	if (started) handlers.get("agent_start")!({ type: "agent_start" }, ctx);
+};
 const themeModule = await import(pathToFileURL(join(dirname(piBin), "modes/interactive/theme/theme.js")).href);
 themeModule.initTheme("dark");
 const { getKeybindings, visibleWidth } = await import(pathToFileURL(tuiPath).href);
@@ -304,14 +312,19 @@ test("afterwords survive Done and quit once, reject invalid output, and cannot s
 	const listeners = new Map<string, Function>();
 	const notices: string[] = [];
 	const logs: any[] = [];
+	let thinking = "high";
+	const settings: any = { thinkingBudgets: { high: 4096 } };
 	const pi = {
 		registerCommand: () => {},
 		on: (event: string, handler: Function) => handlers.set(event, handler),
 		events: { on: (event: string, handler: Function) => { listeners.set(event, handler); return () => { listeners.delete(event); }; } },
 		appendEntry: (customType: string, data: any) => { assert.equal(customType, "pi-afterword"); logs.push(data); },
+		getThinkingLevel: () => thinking,
+		getSettings: () => structuredClone(settings),
 	};
 	let note = "Keep completion hooks outside Pinote's serial queue so callbacks can query task state without deadlocking the final database write operation. Keep the waitUntil registration synchronous to prevent task completion races.";
-	const result = () => ({ stopReason: "stop", content: [{ type: "text", text: note }] });
+	const usage = { input: 2, output: 40, cacheRead: 9000, cacheWrite: 30, totalTokens: 9072, cost: { input: 0, output: 0.0008, cacheRead: 0.0018, cacheWrite: 0.0002, total: 0.0028 } };
+	const result = () => ({ role: "assistant", stopReason: "stop", content: [{ type: "text", text: note }], usage });
 	let calls = 0;
 	const requests: any[][] = [];
 	let provider: () => Promise<any> = async () => result();
@@ -320,24 +333,35 @@ test("afterwords survive Done and quit once, reject invalid output, and cannot s
 		session.appendMessage({ role: "user", content: text, timestamp: Date.now() });
 		session.appendMessage({ role: "assistant", content: [{ type: "text", text: `Verified ${text}` }], timestamp: Date.now(), stopReason: "stop" });
 	};
+	let idle = true;
+	let replacedPrompt = false;
+	const signals: AbortSignal[] = [];
 	const ctx = {
-		mode: "tui", hasUI: true, cwd: temp, sessionManager: session,
+		mode: "tui", hasUI: true, cwd: temp, sessionManager: session, isIdle: () => idle,
 		model: { provider: "test", id: "afterword", contextWindow: 32768, reasoning: true },
 		modelRegistry: { streamSimple(model: unknown, context: any, options: any) {
 			calls++;
 			assert.equal(model, ctx.model);
-			assert.equal(context.messages.length, 2);
 			requests.push(context.messages);
-			if (/^Shorten the lesson below to at most 25 words/.test(context.messages[0].content)) return { result: provider };
-			assert.equal(context.tools, undefined, "No executable tools in final request");
-			assert.match(context.messages[0].content, /untrusted reference material/);
-			assert.match(context.messages[0].content, /durable, non-obvious lesson/);
-			assert.match(context.messages[0].content, /If no such lesson exists, preserve the most consequential decision and its rationale/);
-			assert.match(context.messages[0].content, /Avoid PR status, test counts, completion summaries, and routine next steps/);
-			assert.match(context.messages[0].content, /Aim for at most 25 words; never exceed 30 whitespace-separated words/);
-			assert.ok(context.messages[1].content.length <= 64032);
-			assert.equal(options.reasoning, ctx.model.reasoning ? "minimal" : undefined);
 			assert.ok(options.signal instanceof AbortSignal);
+			signals.push(options.signal);
+			const { signal: _signal, ...rest } = options;
+			assert.deepEqual(rest, { reasoning: thinking === "off" ? undefined : thinking, thinkingBudgets: settings.thinkingBudgets,
+				sessionId: session.getSessionId(), disableContinuation: true, transport: "sse" }, "Session settings for cache reuse; no output cap or cache opt-out");
+			if (/^That lesson has \d+ words; the limit is 30\. Rewrite it in at most \d+ words/.test(context.messages.at(-1).content)) {
+				assert.deepEqual(context.messages.slice(0, -2), requests.at(-2), "Shortening continues the same conversation");
+				assert.equal(context.messages.at(-2).role, "assistant");
+				return { result: provider };
+			}
+			const history = convertToLlm(session.buildSessionProjection().messages);
+			if (!settings.images?.blockImages && !replacedPrompt) assert.deepEqual(context.messages.slice(0, -1), history, "Repeats the session's own request");
+			const question = context.messages.at(-1);
+			assert.equal(question.role, "user");
+			assert.match(question.content, /durable, non-obvious lesson you learned in this conversation/);
+			assert.match(question.content, /If no such lesson exists, preserve the most consequential decision and its rationale/);
+			assert.match(question.content, /Avoid PR status, test counts, completion summaries, and routine next steps/);
+			assert.match(question.content, /Aim for at most 25 words; never exceed 30 whitespace-separated words/);
+			assert.match(question.content, /do not call tools/);
 			return { result: provider };
 		} },
 		ui: { notify: (message: string) => notices.push(message) },
@@ -402,7 +426,8 @@ test("afterwords survive Done and quit once, reject invalid output, and cannot s
 		assert.equal(saved[0].reason, "done");
 		assert.equal(saved[0].session_id, session.getSessionId());
 		assert.equal(saved[0].model, "test/afterword");
-		assert.equal(saved[0].thinking_level, "minimal");
+		assert.equal(saved[0].thinking_level, "high", "The session's thinking level");
+		assert.deepEqual(logs.at(-1).attempts.map((attempt: any) => attempt.usage), [usage], "Diagnostics record token usage and cost");
 		assert.equal(statSync(path).mode & 0o777, 0o600);
 		assert.equal(statSync(dirname(path)).mode & 0o777, 0o700);
 		assert.equal(listeners.size, 0, "Shutdown detaches completion listener");
@@ -416,6 +441,7 @@ test("afterwords survive Done and quit once, reject invalid output, and cannot s
 		await handlers.get("session_start")!({ reason: "resume" }, ctx);
 		append("new information");
 		ctx.model.reasoning = false;
+		thinking = "off";
 		note = "New verified information can produce another afterword in the same session.";
 		await handlers.get("session_shutdown")!({ reason: "new" }, ctx);
 		saved = rows();
@@ -432,7 +458,8 @@ test("afterwords survive Done and quit once, reject invalid output, and cannot s
 		await done();
 		assert.equal(rows().length, 2, "Overlong text is rejected, not silently cut");
 		assert.deepEqual(notices.splice(0), ["Generating afterword…", "Afterword was not saved (note too long). Task completion will continue."]);
-		assert.deepEqual(requests.slice(-3).map((request) => request[1].content === note), [false, true, true], "Two shortening retries, then give up");
+		assert.deepEqual(requests.slice(-3).map((request) => request.at(-1).content.match(/^That lesson has 31 words; the limit is 30\. Rewrite it in at most (\d+) words/)?.[1]),
+			[undefined, "20", "15"], "Two shortening retries asking for fewer words, then give up");
 		assert.partialDeepStrictEqual(logs.at(-1), { outcome: "failed", trigger: "done", taskId: 381, model: "test/afterword", failure: "note too long" });
 		assert.deepEqual(logs.at(-1).attempts.map((attempt: any) => [attempt.stopReason, attempt.words]), [["stop", 31], ["stop", 31], ["stop", 31]]);
 		assert.doesNotMatch(JSON.stringify(logs), /word word/, "Diagnostics never contain note text");
@@ -442,10 +469,85 @@ test("afterwords survive Done and quit once, reject invalid output, and cannot s
 		await done();
 		provider = async () => result();
 		assert.equal(rows().at(-1)!.note, short);
-		assert.equal(requests.at(-1)![1].content, Array(31).fill("word").join(" "), "The retry sends only the rejected note");
-		assert.match(requests.at(-1)![0].content, /untrusted reference material/);
-		assert.partialDeepStrictEqual(logs.at(-1), { outcome: "saved", attempts: [{ words: 31 }, { words: 9 }] });
+		assert.equal(requests.at(-1)!.at(-2).content[0].text, Array(31).fill("word").join(" "), "The model sees its own rejected note");
+		assert.partialDeepStrictEqual(logs.at(-1), { outcome: "saved", attempts: [{ words: 31, usage }, { words: 9, usage }] });
 		deleteLast();
+		append("blocked images");
+		const image = { type: "image", data: "aW1hZ2U=", mimeType: "image/png" };
+		session.appendMessage({ role: "user", content: [{ type: "text", text: "See" }, image, image, { type: "text", text: "and" }, image], timestamp: Date.now() });
+		settings.images = { blockImages: true };
+		const entries = session.getEntries().length;
+		await done();
+		settings.images = { blockImages: false };
+		assert.equal(session.getEntries().length, entries, "The request never enters the session");
+		const blocked = "Image reading is disabled.";
+		assert.deepEqual(requests.at(-1)!.at(-2).content, [{ type: "text", text: "See" }, { type: "text", text: blocked }, { type: "text", text: "and" }, { type: "text", text: blocked }], "Pi's blocked-image placeholders");
+		assert.deepEqual(requests.at(-1)!.slice(0, -2), convertToLlm(session.buildSessionProjection().messages).slice(0, -1));
+		deleteLast();
+		append("run with a replaced prompt");
+		const tool = { name: "bash", description: "Run a command", parameters: { type: "object", properties: {} } };
+		session.appendMessage({ role: "system", content: "", sections: { project: "PROJECT-MARKER" }, toolsAdded: [tool], timestamp: Date.now() });
+		session.appendMessage({ role: "system", content: "", sections: { project: null }, timestamp: Date.now() });
+		append("after the system messages");
+		const recordedPrompt = getCurrentSystemPrompt(convertToLlm(session.buildSessionProjection().messages));
+		for (const forced of ["Prompt replaced for this run", recordedPrompt]) {
+			startRun(handlers, ctx, forced);
+			replacedPrompt = true;
+			await done();
+			replacedPrompt = false;
+			const replaced = requests.at(-1)!;
+			assert.partialDeepStrictEqual(replaced[0], { role: "system", content: forced, toolsAdded: [tool] }, "Pi's per-run prompt projection, even for identical text");
+			assert.deepEqual(replaced.slice(1, -1), convertToLlm(session.buildSessionProjection().messages).filter((message: any) => message.role !== "system"));
+			assert.doesNotMatch(JSON.stringify(replaced), /PROJECT-MARKER/, "Never sends recorded prompt sections Pi replaced");
+			deleteLast();
+		}
+		startRun(handlers, ctx, undefined, false);
+		append("after a run that failed to start");
+		replacedPrompt = true;
+		await done();
+		replacedPrompt = false;
+		assert.doesNotMatch(JSON.stringify(requests.at(-1)), /PROJECT-MARKER/, "Only a started run replaces the last run's prompt");
+		deleteLast();
+		handlers.get("session_tree")!({ type: "session_tree" }, ctx);
+		append("after tree navigation");
+		await done(); // The mock asserts the recorded history, system messages included.
+		deleteLast();
+		startRun(handlers, ctx);
+		append("after an unforced run");
+		await done();
+		assert.match(JSON.stringify(requests.at(-1)), /PROJECT-MARKER/, "Unforced runs keep Pi's recorded system messages");
+		deleteLast();
+		append("agent still running");
+		idle = false;
+		const beforeBusy = calls;
+		await done();
+		idle = true;
+		assert.equal(calls, beforeBusy, "Never sends a session request during a running turn");
+		assert.deepEqual(notices.splice(0).at(-1), "Afterword was not saved (agent busy). Task completion will continue.");
+		assert.partialDeepStrictEqual(logs.at(-1), { outcome: "failed", failure: "agent busy", attempts: [] });
+		const becomingBusy = done(); // A turn starts while the duplicate check is pending.
+		idle = false;
+		await becomingBusy;
+		idle = true;
+		assert.equal(calls, beforeBusy, "Idle is rechecked when the request would be sent");
+		assert.equal(logs.at(-1).failure, "agent busy");
+		let finishTurn!: (value: any) => void;
+		provider = () => new Promise((resolve) => { finishTurn = resolve; });
+		const overtaken = done();
+		for (let i = 0; i < 100 && !finishTurn; i++) await nextTick();
+		handlers.get("agent_start")!({ type: "agent_start" }, ctx);
+		assert.equal(signals.at(-1)!.aborted, true, "A real turn ends the afterword request");
+		finishTurn(result());
+		await overtaken;
+		provider = async () => result();
+		assert.equal(logs.at(-1).failure, "interrupted");
+		notices.splice(0);
+		append("tool call instead of a note");
+		provider = async () => ({ stopReason: "toolUse", content: [{ type: "toolCall", id: "call", name: "bash", arguments: {} }], usage });
+		await done();
+		provider = async () => result();
+		assert.partialDeepStrictEqual(logs.at(-1), { outcome: "failed", failure: "incomplete response", attempts: [{ stopReason: "toolUse" }] });
+		assert.equal(signals.at(-1)!.aborted, true, "A rejected response's provider request is ended");
 		append("reply over both limits");
 		replies.push(Array(350).fill("sixsix").join(" "), short);
 		provider = async () => { note = replies.shift()!; return result(); };
@@ -517,13 +619,14 @@ test("afterwords survive Done and quit once, reject invalid output, and cannot s
 		assert.equal(rows().length, 2, "An uncooperative provider cannot write after timeout");
 		const keep = session.appendMessage({ role: "user", content: "Continue after compaction", timestamp: Date.now() });
 		session.appendCompaction("Verified queue isolation; remaining checks pending.", keep, 1000);
-		assert.deepEqual(session.buildSessionProjection().messages.map((message: any) => message.role), ["compactionSummary", "user"]);
+		assert.deepEqual(session.buildSessionProjection().messages.map((message: any) => message.role), ["system", "compactionSummary", "user"], "Compaction keeps the prompt checkpoint");
 		note = "Queue isolation was verified before compaction; finish the remaining checks.";
+		thinking = "medium";
 		provider = async () => ({ ...result(), provider: "physical", model: "routed-alias", responseModel: "resolved-model", thinkingLevel: "low" });
 		await handlers.get("session_shutdown")!({ reason: "quit" }, ctx);
 		assert.equal(rows().length, 3, "Compacted-away assistant messages still support an afterword");
 		assert.equal(rows()[2].model, "physical/resolved-model", "Prefer the provider-reported generating model over the routed alias");
-		assert.equal(rows()[2].thinking_level, "low");
+		assert.equal(rows()[2].thinking_level, "medium", "The session's level, not one reported by the provider");
 		assert.deepEqual(terminal, ["Generating afterword…", `Afterword saved:\n${rows()[2].note}`]);
 		await handlers.get("session_start")!({ reason: "reload" }, ctx);
 		await handlers.get("session_shutdown")!({ reason: "reload" }, ctx);

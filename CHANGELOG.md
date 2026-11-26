@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.11.0
+
+- Ask the session's own model what it learned, as one more question on the session's request with its thinking level, so providers can reuse the prompt cache; the exchange is never added to the session. Done during a running agent turn is skipped, and a turn starting during generation interrupts it.
+- Shorten an overlong note in the same conversation, asking for at most 20 words and then 15; the 30-word limit is unchanged.
+- Save the session's thinking level with each note, and log each request's token usage and cost estimate.
+
 ## 0.10.0
 
 - Ask the model to shorten a note over 30 words, up to two more times, instead of discarding it; the prompt now aims for 25 words.
