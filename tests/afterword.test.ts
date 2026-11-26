@@ -491,6 +491,11 @@ test("afterwords survive Done and quit once, reject invalid output, and cannot s
 		assert.deepEqual(replaced.slice(1, -1), convertToLlm(session.buildSessionProjection().messages).filter((message: any) => message.role !== "system"));
 		assert.doesNotMatch(JSON.stringify(replaced), /PROJECT-MARKER/, "Never sends the recorded prompt Pi replaced");
 		deleteLast();
+		handlers.get("session_tree")!({ type: "session_tree" }, ctx);
+		append("after tree navigation");
+		await done();
+		assert.deepEqual(requests.at(-1)!.slice(0, -1), convertToLlm(session.buildSessionProjection().messages), "A run's prompt is not reused after leaving its branch");
+		deleteLast();
 		runPrompt = getCurrentSystemPrompt(convertToLlm(session.buildSessionProjection().messages));
 		handlers.get("agent_end")!({ type: "agent_end", messages: [] }, ctx);
 		append("agent still running");

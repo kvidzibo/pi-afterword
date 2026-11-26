@@ -315,6 +315,7 @@ export default function (pi: ExtensionAPI): void {
 	// Pi forgets a per-run replacement prompt once the run settles; agent_end still reports it.
 	let runPrompt: string | undefined;
 	pi.on("agent_end", (_event, ctx) => { runPrompt = ctx.getSystemPrompt(); });
+	pi.on("session_tree", () => { runPrompt = undefined; }); // The run belonged to the branch just left.
 
 	// Async converts snapshot/setup exceptions into registered work, not bus errors.
 	const leaveAfterword = async (ctx: ExtensionContext, reason: Reason, taskId?: number, source?: AbortSignal): Promise<void> => {
