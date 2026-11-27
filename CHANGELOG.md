@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.13.0
+
+- Remember which notes have been reviewed: `/pi-afterword` shows the reviewed marker and the number of newer notes, labels reviewed notes, and `r` sets the marker to any note ID or back to 0.
+
 ## 0.12.0
 
 - Save each note's cost estimate, including shortening requests, and show it when the note is saved and in `/pi-afterword`; older notes show `unknown`.

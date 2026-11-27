@@ -31,7 +31,7 @@ Existing notes stay in the same database; schema upgrades are automatic.
 ## Use
 
 At interactive startup, `Afterwords: N` shows the saved-note count without adding
-model context. `/pi-afterword` opens a read-only list, newest first. Arrows select,
+model context. `/pi-afterword` opens the list, newest first; notes themselves are never edited. Arrows select,
 Page Up/Down scroll, Enter shows details, and Escape returns or closes. Browsing
 makes no model requests and does not inject notes into the conversation. Each note's
 header shows its generating model, the session's thinking level and Pi's cost
@@ -76,6 +76,24 @@ and noninteractive runs do not generate notes. Crashes, SIGKILL, power loss or
 terminal failure may prevent saving. Provider and database failures are not
 retried; synchronous filesystem calls cannot be preempted by JavaScript timers.
 Requests may incur provider charges outside Pi's main-turn usage totals.
+
+### Reviewed marker
+
+The database remembers the highest note ID already reviewed, so a later review can
+skip older notes. The list footer shows the marker and how many notes are newer;
+notes at or below it are labelled `reviewed`. Press `r` in the list and enter a
+note ID to move the marker, or `0` to start fresh.
+
+Scripts and agents read or set the same value in the `state` table:
+
+```sql
+SELECT * FROM afterwords WHERE id > COALESCE(
+  (SELECT value FROM state WHERE key = 'reviewed_through'), 0);
+INSERT INTO state (key, value) VALUES ('reviewed_through', 236)
+  ON CONFLICT (key) DO UPDATE SET value = excluded.value;
+```
+
+Databases from before 0.13.0 gain the table on the next save or `/pi-afterword`.
 
 ### Diagnostics
 

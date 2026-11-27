@@ -69,7 +69,8 @@ async function database() {
 				created_at TEXT NOT NULL,
 				note TEXT NOT NULL,
 				UNIQUE (session_id, context_hash)
-			)`);
+			);
+			CREATE TABLE IF NOT EXISTS state (key TEXT PRIMARY KEY, value INTEGER NOT NULL)`);
 		const columns = new Set(db.prepare("PRAGMA table_info(afterwords)").all().map((column) => column.name));
 		for (const [name, type] of [["thinking_level", "TEXT"], ["cost", "REAL"]]) {
 			if (!columns.has(name)) db.exec(`ALTER TABLE afterwords ADD COLUMN ${name} ${type}`);
@@ -193,10 +194,14 @@ export default function (pi: ExtensionAPI): void {
 				return;
 			}
 			let notes;
+			let reviewed = 0; // Notes up to this ID have been reviewed; 0 means none.
 			try {
 				const db = await database();
 				try {
 					notes = db.prepare("SELECT id, note, created_at, cwd, reason, task_id, model, thinking_level, cost FROM afterwords ORDER BY created_at DESC, id DESC").all();
+					// A hand-edited marker may be text or exceed Number's range, which node:sqlite refuses to read.
+					const marker = db.prepare("SELECT MIN(value, ?) AS value FROM state WHERE key = 'reviewed_through' AND typeof(value) = 'integer'").get(Number.MAX_SAFE_INTEGER)?.value;
+					if (typeof marker === "number" && Number.isSafeInteger(marker) && marker > 0) reviewed = marker;
 				} finally { db.close(); }
 			} catch {
 				ctx.ui.notify("Saved afterwords could not be read.", "error");
@@ -208,13 +213,15 @@ export default function (pi: ExtensionAPI): void {
 			}
 			let selected = 0;
 			let listTop = 0;
+			let markerChanged = false; // Labels may rewrap, so the saved scroll offset no longer fits.
 			while (true) {
-				const index = await ctx.ui.custom<number | undefined>((tui, theme, keybindings, done) => {
+				const index = await ctx.ui.custom<number | "reviewed" | undefined>((tui, theme, keybindings, done) => {
 					const scroll = new ScrollView(new Text(), { scrollbar: "hidden" });
 					let starts: number[] = [];
 					let previousWidth: number | undefined;
 					let previousHeight: number | undefined;
-					let revealSelection = false;
+					let revealSelection = markerChanged;
+					markerChanged = false;
 					const border = () => new DynamicBorder((text) => theme.fg("border", text));
 					return {
 						capturesViewportInput: true,
@@ -224,17 +231,23 @@ export default function (pi: ExtensionAPI): void {
 							header.addChild(new Spacer(1));
 							header.addChild(new Text(theme.fg("accent", theme.bold(`Afterwords · ${notes.length} saved · newest first`)), 1, 0));
 							header.addChild(new Spacer(1));
-							const footer = new Container();
-							footer.addChild(new Text(theme.fg("dim", `${selected + 1}/${notes.length}`), 1, 0));
-							footer.addChild(new Spacer(1));
-							footer.addChild(new Text(rawKeyHint("↑↓", "navigate") + "  " +
-								keyHint("tui.select.pageUp", "up") + "  " + keyHint("tui.select.pageDown", "down") + "  " +
-								keyHint("tui.select.confirm", "details") + "  " + keyHint("tui.select.cancel", "close"), 1, 0));
-							footer.addChild(new Spacer(1));
-							footer.addChild(border());
+							// Short, narrow terminals drop the footer's blank lines so the list keeps its row budget.
+							const footer = (spaced: boolean) => {
+								const footer = new Container();
+								footer.addChild(new Text(theme.fg("dim", `${selected + 1}/${notes.length} · ${reviewed ? `reviewed #${reviewed}` : "none reviewed"} · ${notes.filter((row) => Number(row.id) > reviewed).length} new`), 1, 0));
+								if (spaced) footer.addChild(new Spacer(1));
+								footer.addChild(new Text(rawKeyHint("↑↓", "navigate") + "  " +
+									keyHint("tui.select.pageUp", "up") + "  " + keyHint("tui.select.pageDown", "down") + "  " +
+									keyHint("tui.select.confirm", "details") + "  " + rawKeyHint("r", "reviewed") + "  " + keyHint("tui.select.cancel", "close"), 1, 0));
+								if (spaced) footer.addChild(new Spacer(1));
+								footer.addChild(border());
+								return footer.render(width);
+							};
 							const above = header.render(width);
-							const below = footer.render(width);
-							const height = Math.max(1, tui.terminal.rows - above.length - below.length - 5);
+							const budget = tui.terminal.rows - above.length - 5;
+							let below = footer(true);
+							if (budget - below.length < 1) below = footer(false);
+							const height = Math.max(1, budget - below.length);
 							const indent = Math.min(3, Math.max(0, width - 1));
 							const lines: string[] = [];
 							starts = [];
@@ -242,7 +255,7 @@ export default function (pi: ExtensionAPI): void {
 							for (const [i, row] of notes.entries()) {
 								starts.push(lines.length);
 								const active = i === selected;
-								const label = theme.fg(active ? "accent" : "muted", `#${row.id} · ${String(row.created_at).slice(0, 16).replace("T", " ")} · ${row.model} · thinking: ${row.thinking_level ?? "unknown"} · cost: ${formatCost(row.cost)}`);
+								const label = theme.fg(active ? "accent" : "muted", `#${row.id} · ${String(row.created_at).slice(0, 16).replace("T", " ")} · ${row.model} · thinking: ${row.thinking_level ?? "unknown"} · cost: ${formatCost(row.cost)}${Number(row.id) > reviewed ? "" : " · reviewed"}`);
 								const text = new Text(`${label}\n${theme.fg(active ? "accent" : "text", String(row.note))}`, 0, 0);
 								for (const [j, line] of text.render(width - indent).entries()) {
 									const prefix = active && j === 0 && indent === 3 ? theme.fg("accent", " → ") : " ".repeat(indent);
@@ -269,6 +282,7 @@ export default function (pi: ExtensionAPI): void {
 						handleInput(data: string) {
 							if (keybindings.matches(data, "tui.select.cancel")) { done(undefined); return; }
 							if (keybindings.matches(data, "tui.select.confirm")) { done(selected); return; }
+							if (data === "r") { done("reviewed"); return; }
 							if (keybindings.matches(data, "tui.select.up") || data === "k") {
 								selected = Math.max(0, selected - 1);
 								revealSelection = true;
@@ -285,6 +299,26 @@ export default function (pi: ExtensionAPI): void {
 					};
 				});
 				if (index === undefined) return;
+				if (index === "reviewed") {
+					const answer = (await ctx.ui.input(`Reviewed through note ID (now ${reviewed}, selected ${notes[selected].id}; 0 starts fresh)`))?.trim();
+					if (!answer) continue;
+					const value = Number(answer);
+					if (!/^\d+$/.test(answer) || !Number.isSafeInteger(value)) {
+						ctx.ui.notify("Reviewed marker unchanged: enter a whole note ID, or 0.", "error");
+						continue;
+					}
+					try {
+						const db = await database();
+						try {
+							db.prepare("INSERT INTO state (key, value) VALUES ('reviewed_through', ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value").run(value);
+						} finally { db.close(); }
+						reviewed = value;
+						markerChanged = true;
+					} catch {
+						ctx.ui.notify("Reviewed marker could not be saved.", "error");
+					}
+					continue;
+				}
 				const row = notes[index];
 				await ctx.ui.custom<void>((tui, _theme, keybindings, done) => {
 					const text = new Text(`${row.note}\n\n${row.created_at} · ${row.model} · thinking: ${row.thinking_level ?? "unknown"} · cost: ${formatCost(row.cost)}\n${row.reason}${row.task_id === null ? "" : ` · task ${row.task_id}`}\n${row.cwd}`, 0, 0);
