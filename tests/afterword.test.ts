@@ -193,6 +193,23 @@ test("command browses saved messages across projects without generating or modif
 			assert.equal(longLists, 2);
 			assert.equal(longDetails, 1);
 			assert.deepEqual(db.prepare("SELECT * FROM afterwords ORDER BY id").all(), longBefore, "Browsing is read-only; no model APIs are provided");
+			const answers = ["5", "x", undefined, "0"];
+			const headers: string[] = [];
+			const marker = () => db.prepare("SELECT value FROM state WHERE key = 'reviewed_through'").get()?.value;
+			const stored: unknown[] = [];
+			browse = (component) => {
+				const view = plain(component.render(100)).join("\n");
+				headers.push(view.match(/(?:none reviewed|reviewed #\d+) · \d+ new/)![0]);
+				stored.push(marker());
+				assert.equal([...view.matchAll(/ · reviewed *$/gm)].length, /reviewed #5/.test(headers.at(-1)!) ? 5 : 0);
+				component.handleInput(answers.length ? "r" : "\u001b");
+			};
+			customCalls = 0;
+			await command.handler("", { ...ctx, ui: { ...ctx.ui, input: async () => answers.shift() } });
+			assert.deepEqual(headers, ["none reviewed · 7 new", "reviewed #5 · 2 new", "reviewed #5 · 2 new", "reviewed #5 · 2 new", "none reviewed · 7 new"]);
+			assert.deepEqual(stored, [undefined, 5, 5, 5, 0], "Only a whole number changes the stored marker");
+			assert.match(notices.pop()!, /marker unchanged/);
+			assert.deepEqual(db.prepare("SELECT * FROM afterwords ORDER BY id").all(), longBefore);
 			db.exec("DROP TABLE afterwords; CREATE TABLE afterwords (id INTEGER)");
 			await command.handler("", ctx);
 			assert.match(notices.pop()!, /could not be read/);
