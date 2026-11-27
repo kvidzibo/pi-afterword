@@ -199,7 +199,9 @@ export default function (pi: ExtensionAPI): void {
 				const db = await database();
 				try {
 					notes = db.prepare("SELECT id, note, created_at, cwd, reason, task_id, model, thinking_level, cost FROM afterwords ORDER BY created_at DESC, id DESC").all();
-					reviewed = Number(db.prepare("SELECT value FROM state WHERE key = 'reviewed_through'").get()?.value ?? 0);
+					// A hand-edited marker may be text or exceed Number's range, which node:sqlite refuses to read.
+					const marker = db.prepare("SELECT MIN(value, ?) AS value FROM state WHERE key = 'reviewed_through'").get(Number.MAX_SAFE_INTEGER)?.value;
+					if (typeof marker === "number" && Number.isSafeInteger(marker) && marker > 0) reviewed = marker;
 				} finally { db.close(); }
 			} catch {
 				ctx.ui.notify("Saved afterwords could not be read.", "error");
@@ -211,13 +213,15 @@ export default function (pi: ExtensionAPI): void {
 			}
 			let selected = 0;
 			let listTop = 0;
+			let markerChanged = false; // Labels may rewrap, so the saved scroll offset no longer fits.
 			while (true) {
 				const index = await ctx.ui.custom<number | "reviewed" | undefined>((tui, theme, keybindings, done) => {
 					const scroll = new ScrollView(new Text(), { scrollbar: "hidden" });
 					let starts: number[] = [];
 					let previousWidth: number | undefined;
 					let previousHeight: number | undefined;
-					let revealSelection = false;
+					let revealSelection = markerChanged;
+					markerChanged = false;
 					const border = () => new DynamicBorder((text) => theme.fg("border", text));
 					return {
 						capturesViewportInput: true,
@@ -309,6 +313,7 @@ export default function (pi: ExtensionAPI): void {
 							db.prepare("INSERT INTO state (key, value) VALUES ('reviewed_through', ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value").run(value);
 						} finally { db.close(); }
 						reviewed = value;
+						markerChanged = true;
 					} catch {
 						ctx.ui.notify("Reviewed marker could not be saved.", "error");
 					}

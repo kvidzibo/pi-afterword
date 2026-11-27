@@ -209,6 +209,14 @@ test("command browses saved messages across projects without generating or modif
 			assert.deepEqual(headers, ["none reviewed · 7 new", "reviewed #5 · 2 new", "reviewed #5 · 2 new", "reviewed #5 · 2 new", "none reviewed · 7 new"]);
 			assert.deepEqual(stored, [undefined, 5, 5, 5, 0], "Only a whole number changes the stored marker");
 			assert.match(notices.pop()!, /marker unchanged/);
+			db.exec("UPDATE state SET value = 9223372036854775807");
+			headers.length = 0;
+			browse = (component) => {
+				headers.push(plain(component.render(100)).join("\n").match(/reviewed #\d+ · \d+ new/)![0]);
+				component.handleInput("\u001b");
+			};
+			await command.handler("", ctx);
+			assert.deepEqual(headers, [`reviewed #${Number.MAX_SAFE_INTEGER} · 0 new`], "A marker beyond Number's range still opens the list");
 			assert.deepEqual(db.prepare("SELECT * FROM afterwords ORDER BY id").all(), longBefore);
 			db.exec("DROP TABLE afterwords; CREATE TABLE afterwords (id INTEGER)");
 			await command.handler("", ctx);
