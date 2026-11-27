@@ -212,11 +212,13 @@ test("command browses saved messages across projects without generating or modif
 			db.exec("UPDATE state SET value = 9223372036854775807");
 			headers.length = 0;
 			browse = (component) => {
-				headers.push(plain(component.render(100)).join("\n").match(/reviewed #\d+ · \d+ new/)![0]);
+				headers.push(plain(component.render(100)).join("\n").match(/(?:none reviewed|reviewed #\d+) · \d+ new/)![0]);
 				component.handleInput("\u001b");
 			};
 			await command.handler("", ctx);
-			assert.deepEqual(headers, [`reviewed #${Number.MAX_SAFE_INTEGER} · 0 new`], "A marker beyond Number's range still opens the list");
+			db.exec("UPDATE state SET value = 'oops'");
+			await command.handler("", ctx);
+			assert.deepEqual(headers, [`reviewed #${Number.MAX_SAFE_INTEGER} · 0 new`, "none reviewed · 7 new"], "Hand-edited markers beyond Number's range or of another type still open the list");
 			assert.deepEqual(db.prepare("SELECT * FROM afterwords ORDER BY id").all(), longBefore);
 			db.exec("DROP TABLE afterwords; CREATE TABLE afterwords (id INTEGER)");
 			await command.handler("", ctx);

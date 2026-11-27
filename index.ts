@@ -200,7 +200,7 @@ export default function (pi: ExtensionAPI): void {
 				try {
 					notes = db.prepare("SELECT id, note, created_at, cwd, reason, task_id, model, thinking_level, cost FROM afterwords ORDER BY created_at DESC, id DESC").all();
 					// A hand-edited marker may be text or exceed Number's range, which node:sqlite refuses to read.
-					const marker = db.prepare("SELECT MIN(value, ?) AS value FROM state WHERE key = 'reviewed_through'").get(Number.MAX_SAFE_INTEGER)?.value;
+					const marker = db.prepare("SELECT MIN(value, ?) AS value FROM state WHERE key = 'reviewed_through' AND typeof(value) = 'integer'").get(Number.MAX_SAFE_INTEGER)?.value;
 					if (typeof marker === "number" && Number.isSafeInteger(marker) && marker > 0) reviewed = marker;
 				} finally { db.close(); }
 			} catch {
